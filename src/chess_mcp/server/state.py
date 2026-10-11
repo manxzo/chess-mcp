@@ -1,0 +1,113 @@
+"""Everything the server shares between the WebSocket, the API and background tasks."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import logging
+import time
+
+from starlette.websockets import WebSocket
+
+from chess_mcp.config import ServerConfig
+from chess_mcp.core.game import GameSession
+from chess_mcp.core.store import Store
+from chess_mcp.engines.registry import EngineRegistry
+from chess_mcp.review.book import opening_name
+from chess_mcp.server.live_eval import LiveEval
+from chess_mcp.server.reviews import ReviewService
+
+log = logging.getLogger("chess_mcp")
+PRESENCE_SECONDS = 60
+
+
+def load_session(store: Store) -> GameSession:
+    record = store.load_current()
+    if record is not None:
+        try:
+            return GameSession.from_record(record)
+        except (KeyError, TypeError, ValueError) as exc:
+            log.warning("saved game is unreadable (%s); starting a new one", exc)
+            store.discard_current()
+    return GameSession()
+
+
+class AppState:
+    def __init__(self, config: ServerConfig, store: Store, engines: EngineRegistry):
+        self.config = config
+        self.store = store
+        self.engines = engines
+        self.token = None if config.no_auth else (config.token or store.token())
+        self.session = load_session(store)
+        self.session.listeners.append(self._on_session_change)
+        self.sockets: set[WebSocket] = set()
+        self.live = LiveEval(engines, config.eval_depth, self.schedule_broadcast)
+        self.reviews = ReviewService(store, engines, config.review_depth)
+        self._claude_waits = 0
+        self._claude_last_seen = 0.0
+        self._last_presence = False
+        self._broadcast_pending = False
+
+    # ---- session changes ----
+    def _on_session_change(self) -> None:
+        s = self.session
+        if s.status != "active" and not s.archived:
+            s.archived = True
+            if s.board.move_stack:
+                record = s.to_record()
+                record["opening"] = opening_name(record["moves"])
+                self.store.archive(record, s.pgn())
+        self.store.save_current(s.to_record())
+        self.live.schedule(s.board)
+        self.schedule_broadcast()
+
+    # ---- broadcasting ----
+    def schedule_broadcast(self) -> None:
+        if self._broadcast_pending:
+            return
+        self._broadcast_pending = True
+        asyncio.get_running_loop().create_task(self._broadcast())
+
+    async def _broadcast(self) -> None:
+        self._broadcast_pending = False
+        payload = self.browser_state()
+        for ws in list(self.sockets):
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                self.sockets.discard(ws)
+
+    def browser_state(self) -> dict:
+        state = self.session.browser_state()
+        state["type"] = "state"
+        state["claude_connected"] = self.claude_connected()
+        state["eval"] = self.live.current(self.session.board.fen())
+        return state
+
+    # ---- Claude ----
+    def claude_view(self, mark_seen: bool = True) -> dict:
+        view = self.session.claude_view(mark_seen)
+        view["ui_url"] = self.config.ui_url
+        return view
+
+    def claude_connected(self) -> bool:
+        return self._claude_waits > 0 or time.monotonic() - self._claude_last_seen < PRESENCE_SECONDS
+
+    def mark_claude_seen(self) -> None:
+        self._claude_last_seen = time.monotonic()
+        self.check_presence()
+
+    def claude_wait_started(self) -> None:
+        self._claude_waits += 1
+        self.mark_claude_seen()
+
+    def claude_wait_finished(self) -> None:
+        self._claude_waits = max(0, self._claude_waits - 1)
+        self._claude_last_seen = time.monotonic()
+
+    def check_presence(self) -> None:
+        now = self.claude_connected()
+        if now != self._last_presence:
+            self._last_presence = now
+            with contextlib.suppress(RuntimeError):  # no running loop (e.g. at import)
+                self.schedule_broadcast()
