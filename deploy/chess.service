@@ -1,0 +1,21 @@
+[Unit]
+Description=chess-mcp game server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=chess
+WorkingDirectory=/opt/chess-mcp
+Environment=CHESS_DATA_DIR=/var/lib/chess-mcp
+Environment=CHESS_PORT=3000
+Environment=CHESS_PUBLIC_URL=http://ts.nuc.chess.lan
+Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
+Environment=HOME=/var/lib/chess-mcp
+Environment=UV_CACHE_DIR=/var/lib/chess-mcp/.cache/uv
+EnvironmentFile=/etc/chess-mcp.env
+ExecStart=/usr/local/bin/uv run --frozen --no-dev chess-mcp server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
