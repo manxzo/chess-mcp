@@ -19,6 +19,9 @@ chooses; its moves are its own decisions.
 | Engine role | Claude's choice: engines are advisors Claude may call; Claude picks every move |
 | Client | Web UI only, usable from any device (a TUI was considered and dropped) |
 | UI scope | Board, move list, Claude chat with reply box, game controls, toggleable eval bar |
+| Game review | After each game: Stockfish analysis, eval graph, chess.com-style move ratings, accuracy per player |
+| Review timing | After the game only; no ratings or review during play |
+| Claude coaching | Claude can read the review and talk through key moments |
 | Architecture | Game server lives inside the MCP process (approach 1) |
 | Remote play | Server binds 127.0.0.1 by default; set a host (e.g. `0.0.0.0` or a Tailscale IP) to reach it from other devices; non-local binding requires an access token |
 
@@ -78,6 +81,61 @@ Each unit has one job and a small interface.
   (`~/.config/chess-mcp/engines.toml`, name → path + UCI options).
   Engines start lazily on first use.
 
+**`review/` — game review**
+
+Runs only on finished games (or saved past games). One engine pass per
+position, then pure classification logic with no engine calls, so the rules
+are unit-testable on fixed numbers.
+
+- `analyzer.py`: for every position in the game, runs Stockfish with
+  `multipv=2` at depth 18 (configurable). This gives, per ply: the best move,
+  its eval, the second-best move's eval, and (from the next position) the eval
+  after the move actually played. Runs as a background job; progress is pushed
+  to the UI. Results are cached next to the saved game as
+  `<game>.review.json`, so a review is computed once.
+- `book.py`: opening detection from the Lichess `chess-openings` dataset
+  (CC0, vendored as `data/openings/*.tsv`). A move is **Book** if every move so
+  far, including this one, reaches a position in the dataset. Also yields the
+  opening name for the review header.
+- `classify.py`: rates each move. All thresholds live in one table so they are
+  easy to tune.
+- `accuracy.py`: per-move and per-player accuracy.
+
+**Win probability.** Evals are converted to the mover's expected score
+using Lichess's formula, `win% = 50 + 50 · (2 / (1 + e^(−0.00368208·cp)) − 1)`,
+with mate scores mapped to 0 or 100. A move's **loss** is
+`win%(best move) − win%(played move)`, from the mover's point of view.
+
+**Classification rules**, checked in this order; the first match wins.
+
+| Rating | Symbol | Rule |
+|---|---|---|
+| Book | 📖 | Move is still inside known opening theory (see `book.py`) |
+| Brilliant | !! | Played move is the engine's best or within 2% of it; it sacrifices material (the moved piece, or a piece it leaves undefended, can be won with a static exchange loss of at least 2 pawns' worth); the mover had a reasonable alternative (second-best move not losing, i.e. win% ≥ 30); the position after the move is not worse for the mover (win% ≥ 50); and the mover wasn't already completely winning (best win% < 97) |
+| Great | ! | Played move is the engine's best; the second-best move is at least 15% worse; there was more than one legal move; and the mover wasn't already completely winning (best win% < 97) |
+| Best | ★ | Played move is the engine's first choice |
+| Miss | ✕ | The opponent's previous move was rated Mistake or Blunder; the mover now had a winning chance (best win% ≥ 65); and the played move loses more than 10%, handing that chance back |
+| Excellent | 👍 | Loss ≤ 2% |
+| Good | ✓ | Loss ≤ 5% |
+| Inaccuracy | ?! | Loss ≤ 10% |
+| Mistake | ? | Loss ≤ 20% |
+| Blunder | ?? | Loss > 20% |
+
+The symbols are placeholders for small coloured badges in the UI, using the
+familiar colour per rating (teal brilliant, blue great, green best/excellent/
+good, brown book, yellow inaccuracy, orange mistake, red miss/blunder).
+
+**Accuracy.** Per move, Lichess's formula:
+`accuracy = 103.1668 · e^(−0.04354 · (win%before − win%after)) − 3.1669`,
+clamped to 0–100, with win% from the mover's side. Per player, Lichess's
+method: the volatility-weighted mean of move accuracies averaged with their
+harmonic mean. Book moves count as 100.
+
+**Review output** (`Review` dataclass, also the JSON cached to disk):
+opening name, per-player accuracy and counts per rating, and per ply: SAN,
+rating, loss, eval after the move, the engine's best move and best line (first
+6 moves), and the eval series for the graph.
+
 **`server/hub.py` — UI hub**
 - Starlette app with `GET /` (web UI), static files, and `WS /ws`.
 - Access token: if `CHESS_MCP_TOKEN` is set, or the host is not a loopback
@@ -89,8 +147,11 @@ Each unit has one job and a small interface.
 - On connect and on every session change, sends a full state snapshot
   (small enough that diffs aren't worth it).
 - Accepts client messages: `move`, `chat`, `new_game`, `resign`,
-  `offer_draw`, `answer_draw`, `set_eval` (eval on/off is per client and
-  local to the client; the server just sends eval when it has it).
+  `offer_draw`, `answer_draw`, `list_games`, and `open_review` (game id).
+  The eval bar toggle is purely client-side; the server always sends the
+  eval when it has one.
+- Review requests start the analysis job if needed and stream
+  `review_progress` then `review` messages to the requesting client.
 - After each move, runs a short background Stockfish evaluation
   (depth ~16) and pushes it in the snapshot as `eval`. Skipped silently if no
   engine is available.
@@ -105,6 +166,8 @@ Each unit has one job and a small interface.
 | `send_message(text)` | Posts a chat message to the UIs |
 | `analyze(engine="stockfish", depth=None, time_s=None, multipv=1)` | Runs an engine on the current position |
 | `list_engines()` | Names and availability of configured engines |
+| `get_review(game="current", detail="key_moments")` | The finished game's review. `key_moments` returns the summary plus only Brilliant, Great, Miss, Mistake and Blunder moves with the best line at each; `full` returns every move. Starts the analysis if not done yet and waits for it. Errors while the game is still in progress |
+| `list_games(limit=10)` | Recent finished games with date, result, opening and colours |
 | `new_game(claude_color="black")` | Starts a new game |
 | `respond_to_draw(accept)` / `offer_draw()` / `resign()` | Game controls for Claude |
 
@@ -125,6 +188,20 @@ The MCP server sets `instructions` describing the play loop:
   icon row under the board. Thin eval bar beside the board when enabled.
 - Neutral palette, one accent colour, light and dark themes following the
   system. Stacks vertically on narrow screens.
+- **Review mode.** When a game ends, a "Review" button appears; past games
+  are reachable from a small "Games" list in the control row. Review mode
+  keeps the same layout and swaps the side panel contents:
+  - Header with opening name and each player's accuracy.
+  - A compact summary of counts per rating for both players.
+  - An eval graph (thin area chart, one point per ply) above the move list.
+    Clicking a point jumps to that move.
+  - The move list with a rating badge beside every move.
+  - Selecting a move shows that position on the board, an arrow for the move
+    played and, when different, a green arrow for the engine's best move,
+    plus the best line in a single line of text under the board.
+  - Arrow keys and swipe step through moves.
+  - Chat stays available, so Claude's coaching appears alongside.
+  - A progress bar shows while the analysis runs.
 - Works by touch on phones: tap-to-move as well as drag, board sized to the
   viewport width.
 - Reconnects automatically with backoff.
@@ -172,6 +249,12 @@ Config via environment variables: `CHESS_MCP_HOST` (default `127.0.0.1`),
 - Engines: `UciEngine` against real Stockfish, skipped if the binary is absent.
 - Hub: Starlette `TestClient` WebSocket tests for snapshot on connect, move
   broadcast, error replies, and token enforcement.
+- Review: `classify.py` tested on hand-built eval tables for every rating,
+  including edge cases (mate scores, only-move positions, sacrifices that
+  fail). `accuracy.py` tested against known Lichess values. `book.py` tested on
+  a mainline opening and a sideline that leaves theory. One end-to-end test
+  reviews a short known game with real Stockfish (skipped without the binary)
+  and checks that an obvious blunder is rated Blunder.
 - MCP tools: called directly as functions; `wait_for_turn` tested waking on a
   human move, a chat message, and timeout.
 - Manual check: run Claude Code with the MCP registered, play a few moves in
@@ -188,6 +271,6 @@ Config via environment variables: `CHESS_MCP_HOST` (default `127.0.0.1`),
 
 ## Out of scope (for now)
 
-Terminal UI, clocks and time controls, multiple concurrent games, user
+Live move ratings during play, Terminal UI, clocks and time controls, multiple concurrent games, user
 accounts, HTTPS termination (use Tailscale or a reverse proxy), opening books,
 engine-vs-engine play.
