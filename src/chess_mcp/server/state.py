@@ -47,6 +47,7 @@ class AppState:
         self._claude_last_seen = 0.0
         self._last_presence = False
         self._broadcast_pending = False
+        self._seq = 0
 
     # ---- session changes ----
     def _on_session_change(self) -> None:
@@ -80,6 +81,8 @@ class AppState:
     def browser_state(self) -> dict:
         state = self.session.browser_state()
         state["type"] = "state"
+        self._seq += 1
+        state["seq"] = self._seq  # lets a tab drop a snapshot that arrives after a newer one
         state["claude_connected"] = self.claude_connected()
         state["eval"] = self.live.current(self.session.board.fen())
         return state

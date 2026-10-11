@@ -69,6 +69,7 @@ const app = {
   token: tokenFromUrl(),
   ws: null,
   retry: 0,
+  lastSeq: 0,
   game: null,
   flipped: false,
   showEval: saved.get('chess-eval') === '1',
@@ -93,7 +94,10 @@ function connect() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(app.token)}`);
   app.ws = ws;
-  ws.onopen = () => { app.retry = 0; };
+  ws.onopen = () => {
+    app.lastSeq = 0; // sequence numbers restart with each server process
+    app.retry = 0;
+  };
   ws.onmessage = (event) => handle(JSON.parse(event.data));
   ws.onclose = (event) => {
     if (app.ws !== ws) return;
@@ -116,6 +120,8 @@ function send(msg) {
 
 function handle(msg) {
   if (msg.type === 'state') {
+    if (msg.seq <= app.lastSeq) return; // an older snapshot overtaken by a newer one
+    app.lastSeq = msg.seq;
     app.game = msg;
     render();
   } else if (msg.type === 'error') {

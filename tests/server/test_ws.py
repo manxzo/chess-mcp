@@ -99,3 +99,11 @@ def test_review_of_unknown_game(client):
 def test_index_and_static_are_public(client):
     assert client.get("/").status_code == 200
     assert client.get("/static/index.html").status_code == 200
+
+
+def test_snapshots_carry_an_increasing_sequence_number(client):
+    with client.websocket_connect(ws_url()) as ws:
+        first = ws.receive_json()
+        ws.send_json({"type": "move", "move": "e2e4"})
+        second = receive_until(ws, "state")
+    assert second["seq"] > first["seq"]
