@@ -45,7 +45,7 @@ def see(board: chess.Board, square: chess.Square, by: chess.Color) -> int:
 
 
 def material_given_up(board_before: chess.Board, move: chess.Move) -> int:
-    """Pawns the opponent can win after `move`, minus what `move` itself won."""
+    """Extra material the opponent can win because of `move`, minus what `move` itself won."""
     mover = board_before.turn
     if board_before.is_en_passant(move):
         captured = 1
@@ -55,12 +55,19 @@ def material_given_up(board_before: chess.Board, move: chess.Move) -> int:
     promotion_gain = VALUES[move.promotion] - 1 if move.promotion else 0
     after = board_before.copy(stack=False)
     after.push(move)
-    exposed = [
-        see(after, square, not mover)
-        for square, piece in after.piece_map().items()
-        if piece.color == mover and piece.piece_type != chess.KING
-    ]
-    return max(exposed, default=0) - captured - promotion_gain
+    # Only count exposure the move creates: material already en prise before it is not a sacrifice.
+    return max(0, _worst_exposure(after, mover) - _worst_exposure(board_before, mover)) - captured - promotion_gain
+
+
+def _worst_exposure(board: chess.Board, side: chess.Color) -> int:
+    return max(
+        (
+            see(board, square, not side)
+            for square, piece in board.piece_map().items()
+            if piece.color == side and piece.piece_type != chess.KING
+        ),
+        default=0,
+    )
 
 
 def is_sacrifice(board_before: chess.Board, move: chess.Move, threshold: int = 2) -> bool:

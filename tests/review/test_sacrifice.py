@@ -44,3 +44,14 @@ def test_mating_capture_is_not_a_sacrifice():
 def test_promotion_is_a_gain():
     board = chess.Board("4k3/P7/8/8/8/8/8/4K3 w - - 0 1")
     assert material_given_up(board, chess.Move.from_uci("a7a8q")) < 0
+
+
+def test_a_piece_already_hanging_before_the_move_is_not_a_sacrifice():
+    board = chess.Board("r1bqkbnr/ppp2ppp/2np4/4N3/8/8/PPPPPPPP/RNBQKB1R w KQkq - 0 4")
+    assert material_given_up(board, chess.Move.from_uci("a2a3")) <= 0
+    assert not is_sacrifice(board, chess.Move.from_uci("a2a3"))
+
+
+def test_rescuing_a_hanging_piece_is_not_a_sacrifice():
+    board = chess.Board("r1bqkbnr/ppp2ppp/2np4/4N3/8/8/PPPPPPPP/RNBQKB1R w KQkq - 0 4")
+    assert not is_sacrifice(board, board.parse_san("Nf3"))
