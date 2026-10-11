@@ -6,7 +6,8 @@ Status: Draft, awaiting review
 ## Goal
 
 Play chess against Claude. Claude runs in a Claude Code session and plays through
-MCP tools. The human plays through a clean web UI, reachable from any device.
+MCP tools. The human plays through a clean web UI, hosted on the homelab NUC
+and reachable from any device over Tailscale.
 Claude's messages appear in the UI and the human can reply.
 Claude may consult chess engines (Stockfish first, others later) whenever it
 chooses; its moves are its own decisions.
@@ -22,26 +23,34 @@ chooses; its moves are its own decisions.
 | Game review | After each game: Stockfish analysis, eval graph, chess.com-style move ratings, accuracy per player |
 | Review timing | After the game only; no ratings or review during play |
 | Claude coaching | Claude can read the review and talk through key moments |
-| Architecture | Game server lives inside the MCP process (approach 1) |
-| Remote play | Server binds 127.0.0.1 by default; set a host (e.g. `0.0.0.0` or a Tailscale IP) to reach it from other devices; non-local binding requires an access token |
+| Rating rules | Claude's call; thresholds below, kept in one tunable table |
+| Architecture | Standalone game server, always running in a container on the NUC. The MCP server is a thin HTTP client that Claude Code runs on any machine (supersedes the earlier "server inside the MCP process" choice) |
+| Remote access | Homelab convention: `http://nuc.chess.lan` on the LAN, `http://ts.nuc.chess.lan` over Tailscale, via Caddy on the NUC host. Every request needs an access token |
 
 ## Architecture
 
-One Python process, started by Claude Code as a stdio MCP server, runs two
-things on the same asyncio loop:
+Two processes from one Python package:
 
-1. The MCP server (stdio) exposing game tools to Claude.
-2. An HTTP + WebSocket server (uvicorn/Starlette) for the web UI.
-
-Both talk to a single in-memory `GameSession`, which persists to disk after
-every change.
+1. **Game server** (`chess-mcp server`): a long-running uvicorn/Starlette app in
+   an LXC container on the NUC. It owns the single `GameSession`, the engines,
+   the review, and persistence. It serves the web UI, a WebSocket for
+   browsers, and a small JSON API for the MCP client.
+2. **MCP server** (`chess-mcp mcp`): a stdio FastMCP server that Claude Code
+   launches on whatever machine it runs on. It holds no game state; every tool
+   is an HTTP call to the game server.
 
 ```
- Claude Code ──stdio──▶ MCP tools ─┐
-                                   ├──▶ GameSession ──▶ save file
- Browser ───WebSocket──▶ Hub ──────┘        │
-                                            └──▶ Engine registry ──▶ Stockfish
+ Claude Code ──stdio──▶ MCP client ──HTTP /api──┐        (NUC container)
+                                                ├──▶ GameSession ──▶ save files
+ Browser ──────────── WebSocket /ws ────────────┤        │
+              (both through Caddy on the NUC)   │        ├──▶ Engine registry ──▶ Stockfish
+                                                └────────┴──▶ Review
 ```
+
+The web UI works with no Claude session open: you can browse and review past
+games any time. You can only play while Claude is connected and waiting; the
+UI shows whether Claude is connected (a `wait_for_turn` call active in the last
+60 seconds).
 
 ### Units
 
@@ -63,11 +72,10 @@ Each unit has one job and a small interface.
 
 **`core/store.py` — persistence**
 - Saves the current game as JSON (FEN history via move list in UCI, human
-  colour, chat log, status) to `$XDG_DATA_HOME/chess-mcp/current.json`
-  (default `~/.local/share/chess-mcp/current.json`).
+  colour, chat log, status) to `<data dir>/current.json`.
 - On game end, appends the PGN (with chat as comments) to
-  `~/.local/share/chess-mcp/games/<timestamp>.pgn`.
-- Loaded on startup, so a restarted session resumes the game.
+  `<data dir>/games/<timestamp>.pgn`.
+- Loaded on startup, so a restarted server resumes the game.
 
 **`engines/` — engine layer**
 - `base.py`: `Engine` protocol with `name`, `analyse(board, limit) -> Analysis`
@@ -78,7 +86,7 @@ Each unit has one job and a small interface.
 - `registry.py`: discovers engines and hands them out by name. Stockfish path
   is resolved from `STOCKFISH_PATH`, then `PATH`, then `/usr/games/stockfish`.
   Extra UCI engines can be added via a config file
-  (`~/.config/chess-mcp/engines.toml`, name → path + UCI options).
+  (`<data dir>/engines.toml`, name → path + UCI options).
   Engines start lazily on first use.
 
 **`review/` — game review**
@@ -136,14 +144,17 @@ opening name, per-player accuracy and counts per rating, and per ply: SAN,
 rating, loss, eval after the move, the engine's best move and best line (first
 6 moves), and the eval series for the graph.
 
-**`server/hub.py` — UI hub**
-- Starlette app with `GET /` (web UI), static files, and `WS /ws`.
-- Access token: if `CHESS_MCP_TOKEN` is set, or the host is not a loopback
-  address, every request needs the token. When binding non-locally without a
-  token configured, one is generated and stored in
-  `~/.local/share/chess-mcp/token`. The UI URL Claude reports includes
-  `?token=…`; the page keeps it in `localStorage` and sends it on the
-  WebSocket handshake. Wrong or missing token → 401 / close code 4401.
+**`server/app.py` — game server**
+- Starlette app with `GET /` (web UI), static files, `WS /ws`, and `/api/*`.
+- Access token, always on. Read from `CHESS_TOKEN`; if unset, generated on
+  first start and stored in `<data dir>/token`. API calls send
+  `Authorization: Bearer <token>`. The browser opens the UI once as
+  `/?token=…`; the page stores it in `localStorage`, strips it from the
+  address bar, and sends it on the WebSocket handshake. Wrong or missing
+  token → 401 / close code 4401. `--no-auth` exists for local development
+  only and refuses to start unless bound to a loopback address.
+- Caddy sits in front, so the server binds the container's address and trusts
+  nothing about the client IP.
 - On connect and on every session change, sends a full state snapshot
   (small enough that diffs aren't worth it).
 - Accepts client messages: `move`, `chat`, `new_game`, `resign`,
@@ -152,18 +163,34 @@ rating, loss, eval after the move, the engine's best move and best line (first
   eval when it has one.
 - Review requests start the analysis job if needed and stream
   `review_progress` then `review` messages to the requesting client.
+
+**`server/api.py` — JSON API for the MCP client**
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/game` | Claude's view of the game (no background eval) |
+| `GET /api/wait?timeout=45` | Long-poll for Claude's next event; also marks Claude as connected |
+| `POST /api/move` | `{move, message?}` |
+| `POST /api/chat` | `{text}` |
+| `POST /api/new_game` | `{claude_color}` |
+| `POST /api/draw/offer`, `POST /api/draw/respond`, `POST /api/resign` | Game controls |
+| `GET /api/engines`, `POST /api/analyze` | Engine list and analysis of the current position |
+| `GET /api/games`, `GET /api/review/{game_id}?detail=&wait=` | Past games; review, starting it if needed and waiting up to `wait` seconds |
+
+Errors return `{"error": code, "message": …}` with a 4xx status.
 - After each move, runs a short background Stockfish evaluation
   (depth ~16) and pushes it in the snapshot as `eval`. Skipped silently if no
   engine is available.
 
-**`mcp/tools.py` — Claude's tools** (FastMCP from the `mcp` SDK)
+**`mcp/tools.py` — Claude's tools** (FastMCP from the `mcp` SDK, calling the
+API with `httpx`; configured by `CHESS_SERVER_URL` and `CHESS_TOKEN`)
 
 | Tool | Purpose |
 |---|---|
 | `get_game()` | Board (FEN + ASCII), side to move, Claude's colour, move list, status, pending draw offer, unread human messages |
 | `wait_for_turn(timeout_s=45)` | Long-polls until it is Claude's move, a human message arrives, a draw is offered, or the game ends. Returns what happened plus the `get_game` view. Returns `"still_waiting"` on timeout so Claude can call again |
 | `make_move(move, message=None)` | Plays Claude's move (SAN or UCI), optionally with a chat message |
-| `send_message(text)` | Posts a chat message to the UIs |
+| `send_message(text)` | Posts a chat message to the web UI |
 | `analyze(engine="stockfish", depth=None, time_s=None, multipv=1)` | Runs an engine on the current position |
 | `list_engines()` | Names and availability of configured engines |
 | `get_review(game="current", detail="key_moments")` | The finished game's review. `key_moments` returns the summary plus only Brilliant, Great, Miss, Mistake and Blunder moves with the best line at each; `full` returns every move. Starts the analysis if not done yet and waits for it. Errors while the game is still in progress |
@@ -176,7 +203,7 @@ only when Claude calls `analyze`, which keeps its play its own.
 
 The MCP server sets `instructions` describing the play loop:
 `get_game` → (`wait_for_turn` until it's your move) → think, optionally
-`analyze` → `make_move` with a short comment → repeat. `get_game` includes the UI URL (with token) so Claude can tell the human where to play.
+`analyze` → `make_move` with a short comment → repeat. `get_game` includes the UI URL so Claude can tell the human where to play.
 
 **`web/` — web UI** (static, no build step)
 - `index.html`, `app.js`, `style.css`.
@@ -208,36 +235,44 @@ The MCP server sets `instructions` describing the play loop:
 
 ### CLI
 
-`chess-mcp` entry point runs the MCP server (stdio) plus the UI server. This
-is what Claude Code launches.
+- `chess-mcp server` — run the game server. Config: `CHESS_HOST` (default
+  `127.0.0.1`), `CHESS_PORT` (default `8765`), `CHESS_TOKEN`,
+  `CHESS_DATA_DIR` (default `~/.local/share/chess-mcp`), `CHESS_PUBLIC_URL`
+  (the URL reported to Claude, e.g. `http://ts.nuc.chess.lan`),
+  `STOCKFISH_PATH`.
+- `chess-mcp mcp` — run the stdio MCP server. Config: `CHESS_SERVER_URL`,
+  `CHESS_TOKEN`.
 
-Config via environment variables: `CHESS_MCP_HOST` (default `127.0.0.1`),
-`CHESS_MCP_PORT` (default `8765`), `CHESS_MCP_TOKEN` (optional),
-`STOCKFISH_PATH`.
+For local development both run on the laptop: `chess-mcp server` on
+localhost, and `.mcp.json` pointing at it.
 
 ## Data flow: one turn
 
 1. Human plays `e4` in the browser → `{"type":"move","move":"e4"}` over WebSocket.
-2. Hub calls `session.play("e4", by="human")`; session validates, saves,
+2. Server calls `session.play("e4", by="human")`; session validates, saves,
    notifies.
-3. Hub broadcasts the new snapshot to all connected browsers; background eval starts.
-4. Claude's pending `wait_for_turn` wakes and returns
+3. Server broadcasts the new snapshot to all connected browsers; background eval starts.
+4. Claude's pending `wait_for_turn` (an open `GET /api/wait`) wakes and returns
    `{"event":"your_move", "last_move":"e4", ...}`.
 5. Claude optionally calls `analyze`, then `make_move("c5", message="Sicilian it is.")`.
-6. Session validates and saves; hub broadcasts; the UI shows the move and the
+6. The MCP client posts to `/api/move`; session validates and saves; server broadcasts; the UI shows the move and the
    message.
 
 ## Error handling
 
-- Illegal or out-of-turn moves: session raises a typed error. UIs show an
+- Illegal or out-of-turn moves: session raises a typed error. The UI shows an
   inline message; MCP tools return a clear error string listing a few legal
   moves.
 - No engine available: `analyze` returns a clear error naming the expected
   path and env var; eval bar shows nothing. The game still works.
 - Engine crash: `UciEngine` restarts on next call; one retry, then error.
-- Port already in use (e.g. a second Claude session): the UI server logs a
-  warning to stderr and MCP tools still work, but `get_game` reports that the
-  UI server is not running in this process.
+- Game server unreachable: every MCP tool returns a clear error naming
+  `CHESS_SERVER_URL`. `wait_for_turn` retries quietly for up to its timeout
+  first, so a server restart mid-game is invisible to Claude.
+- Two Claude sessions connected: both may wait, but only the first
+  `make_move` for a turn succeeds; the second gets "not your turn".
+- Server restart: the game reloads from disk; browsers and the MCP client
+  reconnect.
 - Corrupt save file: renamed to `current.json.bad`, new game started.
 - WebSocket drops: clients reconnect with backoff and receive a fresh snapshot.
 
@@ -247,30 +282,54 @@ Config via environment variables: `CHESS_MCP_HOST` (default `127.0.0.1`),
 - Core: move validation, turn ownership, SAN/UCI parsing, game end detection,
   draw offers, unread-for-Claude cursor, save/load round trip.
 - Engines: `UciEngine` against real Stockfish, skipped if the binary is absent.
-- Hub: Starlette `TestClient` WebSocket tests for snapshot on connect, move
-  broadcast, error replies, and token enforcement.
+- Server: Starlette `TestClient` tests for the WebSocket (snapshot on
+  connect, move broadcast, error replies) and the API (each endpoint, the
+  long-poll waking and timing out), plus token enforcement on both.
 - Review: `classify.py` tested on hand-built eval tables for every rating,
   including edge cases (mate scores, only-move positions, sacrifices that
   fail). `accuracy.py` tested against known Lichess values. `book.py` tested on
   a mainline opening and a sideline that leaves theory. One end-to-end test
   reviews a short known game with real Stockfish (skipped without the binary)
   and checks that an obvious blunder is rated Blunder.
-- MCP tools: called directly as functions; `wait_for_turn` tested waking on a
-  human move, a chat message, and timeout.
-- Manual check: run Claude Code with the MCP registered, play a few moves in
-  the browser on this machine and from a phone on the network.
+- MCP tools: called directly against an in-process game server (`httpx`
+  ASGI transport), so tool → API → session is tested end to end.
+- Manual check: play a game against Claude locally, then again after
+  deployment from a phone over Tailscale, and open the review.
 
-## Setup work outside the code
+## Setup and deployment
 
-- The Stockfish engine binary is not installed (only the Python wrapper).
-  Install the official Linux x86-64 AVX2 build to `~/.local/bin/stockfish`.
-- Register the server with Claude Code via a project `.mcp.json` running
-  `uv run chess-mcp`.
-- Dependencies: `mcp`, `chess`, `starlette`, `uvicorn`; dev: `pytest`, `pytest-asyncio`, `httpx`. The unused `stockfish`
-  wrapper package is removed in favour of `chess.engine`.
+**Local development.** The Stockfish binary is not installed (only the
+Python wrapper). Install the official Linux x86-64 AVX2 build to
+`~/.local/bin/stockfish`. Dependencies: `mcp`, `chess`, `starlette`,
+`uvicorn`, `httpx`; dev: `pytest`, `pytest-asyncio`. The unused `stockfish`
+wrapper package is removed in favour of `chess.engine`.
+
+**NUC container**, done after the app works locally and following
+`~/homelab` conventions:
+- New entry in `~/homelab/services.yaml`: guest `chess`, node `nuc`, type
+  `ct`, the next free vmid and static IP on the NUC, port `8765`, name
+  `nuc.chess.lan` (and so `ts.nuc.chess.lan`), firewall group `site`
+  (app port from the hosts, ssh from LAN+tailnet). Guest files under
+  `~/homelab/guests/chess/` copied from `guests/_template/`.
+- Created from the shared Ubuntu 26.04 template; unprivileged; 2 cores,
+  1 GB RAM, 8 GB disk. Stockfish runs here, so analysis speed depends on
+  these cores.
+- Inside: `uv`, Stockfish (official AVX2 binary), the app cloned from
+  GitHub (a read-only deploy key if the repo is private), and a systemd unit running `chess-mcp server` as an unprivileged
+  `chess` user with `CHESS_HOST` set to the container IP and
+  `CHESS_PUBLIC_URL=http://ts.nuc.chess.lan`. Data and the token live in
+  `/var/lib/chess-mcp`, which the nightly container backups already cover.
+- `lab sync` publishes DNS and the Caddy route. WebSockets pass through
+  Caddy unchanged.
+- Updates: `git pull` and restart the service (a small script in the repo).
+
+**Claude Code** on any machine: a project `.mcp.json` runs
+`uv run chess-mcp mcp` with `CHESS_SERVER_URL=http://ts.nuc.chess.lan` and the
+token read from the environment, so the token is never committed.
 
 ## Out of scope (for now)
 
-Live move ratings during play, Terminal UI, clocks and time controls, multiple concurrent games, user
-accounts, HTTPS termination (use Tailscale or a reverse proxy), opening books,
-engine-vs-engine play.
+Live move ratings during play, a terminal UI, clocks and time controls,
+multiple concurrent games, user accounts, HTTPS (traffic stays on the LAN and
+tailnet), engine opening books for play, engine-vs-engine games, and exposing
+the UI to the public internet.
