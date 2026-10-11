@@ -73,8 +73,9 @@ Each unit has one job and a small interface.
 **`core/store.py` — persistence**
 - Saves the current game as JSON (FEN history via move list in UCI, human
   colour, chat log, status) to `<data dir>/current.json`.
-- On game end, appends the PGN (with chat as comments) to
-  `<data dir>/games/<timestamp>.pgn`.
+- On game end, archives the game as `<data dir>/games/<game id>.json`
+  (the record plus its opening name, used by the review) and
+  `<data dir>/games/<game id>.pgn` (with chat as comments, for export).
 - Loaded on startup, so a restarted server resumes the game.
 
 **`engines/` — engine layer**
@@ -120,7 +121,7 @@ with mate scores mapped to 0 or 100. A move's **loss** is
 |---|---|---|
 | Book | 📖 | Move is still inside known opening theory (see `book.py`) |
 | Brilliant | !! | Played move is the engine's best or within 2% of it; it sacrifices material (the moved piece, or a piece it leaves undefended, can be won with a static exchange loss of at least 2 pawns' worth); the mover had a reasonable alternative (second-best move not losing, i.e. win% ≥ 30); the position after the move is not worse for the mover (win% ≥ 50); and the mover wasn't already completely winning (best win% < 97) |
-| Great | ! | Played move is the engine's best; the second-best move is at least 15% worse; there was more than one legal move; and the mover wasn't already completely winning (best win% < 97) |
+| Great | ! | Played move is the engine's best; the second-best move is at least 15% worse and leaves the mover below 50% (the position falls apart without it); there was more than one legal move; and the mover wasn't already completely winning (best win% < 97) |
 | Best | ★ | Played move is the engine's first choice |
 | Miss | ✕ | The opponent's previous move was rated Mistake or Blunder; the mover now had a winning chance (best win% ≥ 65); and the played move loses more than 10%, handing that chance back |
 | Excellent | 👍 | Loss ≤ 2% |
@@ -146,7 +147,9 @@ rating, loss, eval after the move, the engine's best move and best line (first
 
 **`server/app.py` — game server**
 - Starlette app with `GET /` (web UI), static files, `WS /ws`, and `/api/*`.
-- Access token, always on. Read from `CHESS_TOKEN`; if unset, generated on
+- Access token, always on, for `/ws` and `/api/*`. The page itself (`/`,
+  `/static/*`) is public because it holds no game data; without a token it
+  shows a small "paste your link" screen. Read from `CHESS_TOKEN`; if unset, generated on
   first start and stored in `<data dir>/token`. API calls send
   `Authorization: Bearer <token>`. The browser opens the UI once as
   `/?token=…`; the page stores it in `localStorage`, strips it from the
@@ -203,14 +206,16 @@ only when Claude calls `analyze`, which keeps its play its own.
 
 The MCP server sets `instructions` describing the play loop:
 `get_game` → (`wait_for_turn` until it's your move) → think, optionally
-`analyze` → `make_move` with a short comment → repeat. `get_game` includes the UI URL so Claude can tell the human where to play.
+`analyze` → `make_move` with a short comment → repeat. `get_game` includes the UI URL; the MCP client appends the token it holds,
+so the link Claude shares opens straight into the game.
 
 **`web/` — web UI** (static, no build step)
 - `index.html`, `app.js`, `style.css`.
 - Board: chessground (the Lichess board) loaded from a CDN. Legal move
   destinations come from the server snapshot, so no client-side chess logic.
-- Layout: board on the left, a single side panel on the right with
-  Claude's chat on top, the move list below it, and a reply box at the bottom.
+- Layout: board on the left, a single side panel on the right with a
+  compact move list on top, Claude's chat below it, and a reply box at the
+  bottom.
   Controls (new game, colour, resign, draw, flip, eval toggle) sit in a quiet
   icon row under the board. Thin eval bar beside the board when enabled.
 - Neutral palette, one accent colour, light and dark themes following the
@@ -307,7 +312,8 @@ wrapper package is removed in favour of `chess.engine`.
 **NUC container**, done after the app works locally and following
 `~/homelab` conventions:
 - New entry in `~/homelab/services.yaml`: guest `chess`, node `nuc`, type
-  `ct`, the next free vmid and static IP on the NUC, port `8765`, name
+  `ct`, the next free vmid and static IP on the NUC, port `3000` (already
+  allowed by the `site` firewall group, so no firewall change), name
   `nuc.chess.lan` (and so `ts.nuc.chess.lan`), firewall group `site`
   (app port from the hosts, ssh from LAN+tailnet). Guest files under
   `~/homelab/guests/chess/` copied from `guests/_template/`.
