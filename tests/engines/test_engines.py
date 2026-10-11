@@ -55,3 +55,13 @@ async def test_stockfish_recovers_after_being_killed(stockfish_path):
         assert again.lines
     finally:
         await engine.close()
+
+
+async def test_dedicated_engine_is_a_separate_process(stockfish_path):
+    reg = EngineRegistry([EngineSpec("stockfish", stockfish_path, {"Threads": 1})])
+    shared = reg.get("stockfish")
+    dedicated = reg.dedicated("stockfish")
+    assert dedicated is not shared
+    assert reg.dedicated("stockfish") is dedicated
+    await dedicated.analyse(chess.Board(), Limit(depth=4))
+    await reg.close_all()

@@ -21,6 +21,12 @@ class ApiClient:
     async def _request(self, method: str, path: str, *, json: dict | None = None, params: dict | None = None, timeout: float = 30) -> dict:
         try:
             response = await self._http.request(method, path, json=json, params=params, timeout=timeout)
+        except httpx.TimeoutException as exc:
+            raise ApiError(
+                "timeout",
+                f"The chess server at {self.base_url} took too long to answer ({exc.__class__.__name__}). "
+                "It may be busy (for example, reviewing a game); try again in a moment.",
+            ) from exc
         except httpx.TransportError as exc:
             raise ApiError(
                 "unreachable",

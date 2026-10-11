@@ -49,7 +49,7 @@ class ReviewService:
                 listener(game_id, done, total)
 
         try:
-            review = await review_game(record, self.engines.get("stockfish"), self.depth, report)
+            review = await review_game(record, self.engines.dedicated("stockfish"), self.depth, report)
             self.store.save_review(game_id, review.to_dict())
             return review
         finally:

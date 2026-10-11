@@ -1,4 +1,8 @@
-"""Short background evaluation for the UI's eval bar. Never shown to Claude."""
+"""Short background evaluation for the UI's eval bar. Never shown to Claude.
+
+One worker at a time: while it is busy, new positions only replace the
+target, so a quick exchange of moves never queues stale evaluations.
+"""
 
 from __future__ import annotations
 
@@ -18,8 +22,9 @@ class LiveEval:
         self.depth = depth
         self.on_update = on_update
         self._fen: str | None = None
+        self._target: chess.Board | None = None
         self._result: dict | None = None
-        self._tasks: set[asyncio.Task] = set()
+        self._worker: asyncio.Task | None = None
 
     def schedule(self, board: chess.Board) -> None:
         fen = board.fen()
@@ -28,21 +33,24 @@ class LiveEval:
         self._fen = fen
         self._result = None
         if board.outcome(claim_draw=True) is not None or not self.engines.has("stockfish"):
+            self._target = None
             return
-        task = asyncio.get_running_loop().create_task(self._run(board.copy()))
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._target = board.copy()
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.get_running_loop().create_task(self._run())
 
-    async def _run(self, board: chess.Board) -> None:
-        try:
-            analysis = await self.engines.get("stockfish").analyse(board, Limit(depth=self.depth))
-        except EngineError:
-            return
-        if not analysis.lines or board.fen() != self._fen:
-            return
-        score = analysis.lines[0].score
-        self._result = {"fen": board.fen(), "text": score.text(), "win_white": round(win_pct_white(score), 1)}
-        self.on_update()
+    async def _run(self) -> None:
+        while self._target is not None:
+            board, self._target = self._target, None
+            try:
+                analysis = await self.engines.get("stockfish").analyse(board, Limit(depth=self.depth))
+            except EngineError:
+                continue
+            if not analysis.lines or board.fen() != self._fen:
+                continue
+            score = analysis.lines[0].score
+            self._result = {"fen": board.fen(), "text": score.text(), "win_white": round(win_pct_white(score), 1)}
+            self.on_update()
 
     def current(self, fen: str) -> dict | None:
         if self._result and self._result["fen"] == fen:

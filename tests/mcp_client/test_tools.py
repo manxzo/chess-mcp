@@ -108,3 +108,15 @@ async def test_mcp_server_registers_every_tool(tools):
     assert names == set(TOOL_NAMES)
     result = await server.call_tool("get_game", {})
     assert "You play black" in result.content[0].text
+
+
+async def test_slow_server_is_reported_as_a_timeout_not_unreachable():
+    def slow(request):
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    client = ApiClient("http://test", TOKEN, transport=httpx.MockTransport(slow))
+    with pytest.raises(ToolError) as exc:
+        await ChessTools(client, TOKEN).analyze(depth=18)
+    assert "took too long" in str(exc.value)
+    assert "Can't reach" not in str(exc.value)
+    await client.aclose()
