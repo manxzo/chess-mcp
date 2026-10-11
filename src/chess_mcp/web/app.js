@@ -43,6 +43,8 @@ function svg(tag, attrs) {
 function button(text, onClick, cls) {
   const b = el('button', cls, text);
   b.type = 'button';
+  b.title = text;
+  b.setAttribute('aria-label', text);
   b.addEventListener('click', onClick);
   return b;
 }
@@ -77,7 +79,7 @@ const app = {
 
 const ground = Chessground($('board'), {
   coordinates: true,
-  animation: { duration: 160 },
+  animation: { duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160 },
   highlight: { lastMove: true, check: true },
   movable: { free: false, showDests: true, events: { after: onUserMove } },
   premovable: { enabled: false },
@@ -218,7 +220,7 @@ function renderStatus() {
   if (!app.ws) status.textContent = 'Reconnecting…';
   else if (app.review) status.textContent = app.review.data.opening || 'Unnamed opening';
   else if (app.loading) status.textContent = 'Analysing the game…';
-  else if (g.status !== 'active') status.textContent = resultText(g);
+  else if (g.status !== 'active') status.textContent = 'Game over';
   else if (!g.claude_connected) status.textContent = 'Claude isn’t connected. Ask Claude to play chess in Claude Code.';
   else status.textContent = g.turn === g.human_color ? 'Your move' : 'Claude is thinking…';
 }
@@ -255,6 +257,7 @@ function badge(rating) {
   const [label, glyph] = RATINGS[rating];
   const b = el('span', `badge r-${rating}`, glyph);
   b.title = label;
+  b.setAttribute('aria-label', label);
   return b;
 }
 
@@ -262,7 +265,11 @@ function moveCell(move, ply) {
   if (!app.review) return el('span', 'mv', move.san);
   const cell = button(move.san, () => goTo(ply), 'mv');
   cell.append(badge(move.rating));
-  if (ply === app.review.ply) cell.classList.add('current');
+  cell.setAttribute('aria-label', `Move ${Math.ceil(ply / 2)}, ${ply % 2 ? 'White' : 'Black'}: ${move.san}, ${RATINGS[move.rating][0]}`);
+  if (ply === app.review.ply) {
+    cell.classList.add('current');
+    cell.setAttribute('aria-current', 'step');
+  }
   return cell;
 }
 
@@ -278,7 +285,13 @@ function renderMoves() {
   }
   list.replaceChildren(...rows);
   const current = list.querySelector('.current');
-  if (current) current.scrollIntoView({ block: 'nearest' });
+  if (current) {
+    // Scroll only the move list; keep the board in place on narrow screens.
+    const row = current.parentElement;
+    const offset = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
+    if (offset < 0) list.scrollTop += offset;
+    else if (offset + row.offsetHeight > list.clientHeight) list.scrollTop += offset + row.offsetHeight - list.clientHeight;
+  }
   else list.scrollTop = list.scrollHeight;
 }
 
@@ -325,21 +338,44 @@ function askPromotion(orig, dest, color) {
   const glyphs = color === 'white' ? { q: '♕', r: '♖', b: '♗', n: '♘' } : { q: '♛', r: '♜', b: '♝', n: '♞' };
   const choose = (piece) => {
     box.hidden = true;
+    $('board').focus({ preventScroll: true });
     send({ type: 'move', move: orig + dest + piece });
   };
   box.replaceChildren(
-    ...Object.entries(glyphs).map(([piece, glyph]) => button(glyph, () => choose(piece))),
-    button('×', () => { box.hidden = true; render(); }),
+    ...Object.entries(glyphs).map(([piece, glyph]) => {
+      const choice = button(glyph, () => choose(piece));
+      const name = { q: 'Queen', r: 'Rook', b: 'Bishop', n: 'Knight' }[piece];
+      choice.title = name;
+      choice.setAttribute('aria-label', `Promote to ${name.toLowerCase()}`);
+      return choice;
+    }),
+    button('×', () => { box.hidden = true; render(); $('board').focus({ preventScroll: true }); }),
   );
+  box.lastElementChild.title = 'Cancel promotion';
+  box.lastElementChild.setAttribute('aria-label', 'Cancel promotion');
   box.hidden = false;
   box.querySelector('button').focus();
 }
+
+// Keep keyboard focus in the board's promotion picker until a choice is made.
+$('promo').addEventListener('keydown', (event) => {
+  const choices = [...event.currentTarget.querySelectorAll('button')];
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    choices.at(-1).click();
+  } else if (event.key === 'Tab') {
+    event.preventDefault();
+    const next = choices.indexOf(document.activeElement) + (event.shiftKey ? -1 : 1);
+    choices[(next + choices.length) % choices.length].focus();
+  }
+});
 
 // ---------------- controls ----------------
 function confirmBox(text, okLabel) {
   const dlg = $('dlg-confirm');
   $('confirm-text').textContent = text;
   $('confirm-ok').textContent = okLabel;
+  $('confirm-ok').setAttribute('aria-label', okLabel);
   dlg.returnValue = '';
   dlg.showModal();
   return new Promise((resolve) => dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), { once: true }));
@@ -402,6 +438,8 @@ function renderGames(games) {
     const when = new Date((g.ended_at || g.started_at) * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
     const row = el('button', 'game-row');
     row.value = g.game_id;
+    row.title = `${outcome}: ${g.opening || `${g.moves} moves`} — ${when}`;
+    row.setAttribute('aria-label', `Review game. ${row.title}`);
     row.append(el('span', `outcome ${outcome.toLowerCase()}`, outcome), el('span', 'opening', g.opening || `${g.moves} moves`), el('span', 'date', when));
     const li = el('li');
     li.append(row);
@@ -435,6 +473,10 @@ function closeReview() {
   renderReview();
 }
 $('btn-close-review').addEventListener('click', closeReview);
+$('review-first').addEventListener('click', () => goTo(0));
+$('review-prev').addEventListener('click', () => goTo(app.review.ply - 1));
+$('review-next').addEventListener('click', () => goTo(app.review.ply + 1));
+$('review-last').addEventListener('click', () => goTo(app.review.data.moves.length));
 
 function goTo(ply) {
   if (!app.review) return;
@@ -468,6 +510,13 @@ function renderReview() {
   $('btn-close-review').hidden = !on;
   $('panel-title').textContent = on ? 'Game review' : 'Claude';
   $('best-line').hidden = !app.review;
+  $('review-nav').hidden = !app.review;
+  if (app.review) {
+    const { ply, data } = app.review;
+    $('review-position').textContent = `${ply} / ${data.moves.length}`;
+    for (const id of ['review-first', 'review-prev']) $(id).disabled = ply === 0;
+    for (const id of ['review-next', 'review-last']) $(id).disabled = ply === data.moves.length;
+  }
   const progress = $('review-progress');
   progress.hidden = !app.loading;
   if (app.loading) {
@@ -531,6 +580,9 @@ function renderGraph(data, ply) {
     nodes.push(svg('line', { x1: cx, x2: cx, y1: cy, y2: cy, class: `g-dot r-${m.rating}` }));
   }
   $('graph').replaceChildren(...nodes);
+  $('graph').setAttribute('aria-valuemax', String(n));
+  $('graph').setAttribute('aria-valuenow', String(ply));
+  $('graph').setAttribute('aria-valuetext', `Position ${ply} of ${n}`);
 }
 
 $('graph').addEventListener('click', (event) => {
