@@ -133,7 +133,7 @@ def build_review(record: dict, evals: list[PositionEval], depth: int) -> Review:
             if m.color == color:
                 counts[m.rating] += 1
         return PlayerSummary(
-            name="You" if is_human else "Claude",
+            name="Human" if is_human else "Claude",
             color=color,
             accuracy=round(accuracy, 1) if accuracy is not None else None,
             counts=counts,

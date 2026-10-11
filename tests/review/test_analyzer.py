@@ -50,7 +50,7 @@ def test_build_review_outside_book():
     assert ratings[3] == "best"
     assert ratings[4] == "blunder"
     assert ratings[5] == "best"
-    assert review.white.name == "You" and review.black.name == "Claude"
+    assert review.white.name == "Human" and review.black.name == "Claude"
     assert review.white.counts["blunder"] == 1
     assert review.white.accuracy < review.black.accuracy
     m = review.moves[4]

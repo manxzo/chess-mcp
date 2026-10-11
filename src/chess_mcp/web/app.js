@@ -540,14 +540,15 @@ function renderReview() {
 }
 
 function sides(data) {
-  const human = data.white.name === 'You' ? data.white : data.black;
+  // Reviews name the human 'Human' (older cached ones say 'You').
+  const human = data.white.name === 'Human' || data.white.name === 'You' ? data.white : data.black;
   return [human, human === data.white ? data.black : data.white];
 }
 
 function renderAccuracy(data) {
   const card = (p) => {
     const c = el('div', 'acc-card');
-    c.append(el('span', 'acc-name', p.name), el('strong', null, p.accuracy == null ? '–' : p.accuracy.toFixed(1)), el('span', 'acc-label', 'accuracy'));
+    c.append(el('span', 'acc-name', p.name === 'Claude' ? 'Claude' : 'You'), el('strong', null, p.accuracy == null ? '–' : p.accuracy.toFixed(1)), el('span', 'acc-label', 'accuracy'));
     return c;
   };
   $('accuracy').replaceChildren(...sides(data).map(card));

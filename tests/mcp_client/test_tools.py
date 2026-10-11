@@ -81,6 +81,8 @@ async def test_review_flow(tools, app):
     s.resign("human")
     text = await tools.get_review(detail="full")
     assert "accuracy" in text
+    assert "Human (white)" in text
+    assert "You (" not in text
     assert "1. e4" in text
     assert "Recent games" in await tools.list_games()
 
