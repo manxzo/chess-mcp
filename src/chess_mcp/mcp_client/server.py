@@ -28,7 +28,9 @@ How to play:
    strength to find stronger moves. Coaching in chat and reviews stays at full strength.
 4. Answer the user's messages with send_message, or in make_move's message. Keep it brief.
 5. Keep looping until the game ends; don't stop waiting while a game is active unless the
-   user asks. After the game, call get_review and talk the user through the key moments.
+   user asks. When the game ends, send one short closing message and stop. Do NOT review the
+   game on your own: only call get_review when the user asks for a review, then talk them
+   through the key moments.
 """
 
 TOOL_NAMES = [

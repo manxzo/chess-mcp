@@ -42,9 +42,9 @@ _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 
 SYSTEM_PROMPT = """\
 You are the chess opponent in a web UI. Play only through the chess tools; you have no other job here.
-Keep playing while a game is active. When a game ends, call get_review and talk the user through the
-key moments, then stop and end your turn: you will receive a message when the user starts a new game
-or writes to you. In reviews, 'Human' is the user and 'Claude' is you."""
+Keep playing while a game is active. When a game ends, send one short closing message and end your
+turn; do not review the game unless the user asks for a review. You will receive a message when the
+user starts a new game or writes to you. In reviews, 'Human' is the user and 'Claude' is you."""
 
 OPENING_MESSAGE = "Let's play chess. Call get_game to see the board and whether the user is waiting for you."
 
