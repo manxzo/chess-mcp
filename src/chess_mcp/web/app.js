@@ -88,6 +88,122 @@ const ground = Chessground($('board'), {
   drawable: { enabled: true, visible: true },
 });
 
+// One set of live elements; desktop anchors preserve their original order.
+const phoneViewport = matchMedia('(max-width: 860px)');
+const viewportHomes = new Map();
+for (const id of ['banner', 'status', 'btn-claude', 'btn-close-review', 'review-nav', 'review', 'moves', 'chat', 'chat-form']) {
+  const node = $(id);
+  const anchor = document.createComment(`${id} desktop position`);
+  node.before(anchor);
+  viewportHomes.set(id, anchor);
+}
+const boardStack = document.querySelector('.board-stack');
+const boardWrap = document.querySelector('.board-wrap');
+let placedForPhone = null;
+let seenChatGame = null;
+let seenChatCount = 0;
+
+function setChatUnread(unread) {
+  $('chat-unread').hidden = !unread;
+  $('btn-chat').setAttribute('aria-label', unread ? 'Chat, unread message from Claude' : 'Chat');
+}
+
+function placeForViewport() {
+  const phone = phoneViewport.matches;
+  if (phone === placedForPhone) return;
+  const focused = document.activeElement;
+  const activeSheet = ['dlg-chat', 'dlg-moves'].find((id) => $(id).open);
+  for (const id of ['dlg-chat', 'dlg-moves']) if ($(id).open) $(id).close();
+  if (phone) {
+    $('mobile-status').prepend($('banner'));
+    $('mobile-status-row').append($('status'), $('btn-claude'), $('btn-close-review'));
+    $('best-line').after($('review-nav'));
+    $('chat-sheet-content').append($('chat'), $('chat-form'));
+    $('moves-sheet-content').append($('review'), $('moves'));
+  } else {
+    for (const [id, anchor] of viewportHomes) anchor.after($(id));
+    boardStack.style.removeProperty('--board-size');
+    setChatUnread(false);
+  }
+  placedForPhone = phone;
+  // Avoid leaving focus in a hidden panel, sheet, or phone-only control.
+  if (phone && ($('dlg-chat').contains(focused) || $('dlg-moves').contains(focused))) {
+    $($('dlg-chat').contains(focused) ? 'btn-chat' : 'btn-moves').focus({ preventScroll: true });
+  } else if (!phone && (activeSheet || focused?.closest('.mobile-only'))) {
+    (focused?.matches('#chat-input, #chat-form button, #moves button, #graph') ? focused : $('board')).focus({ preventScroll: true });
+  } else if (focused?.isConnected) focused.focus({ preventScroll: true });
+  requestAnimationFrame(() => {
+    sizePhoneBoard();
+    ground.redrawAll();
+    scrollMoves();
+    if (!phone) $('chat').scrollTop = $('chat').scrollHeight;
+  });
+}
+
+function sizePhoneBoard() {
+  if (!phoneViewport.matches || $('app').hidden) return;
+  const rows = [...boardStack.children].filter((node) => !node.classList.contains('board-area') && node.getClientRects().length);
+  const gap = parseFloat(getComputedStyle(boardStack).rowGap) || 0;
+  const remaining = boardStack.clientHeight - rows.reduce((height, node) => height + node.getBoundingClientRect().height, 0) - rows.length * gap;
+  const rail = $('evalbar').hidden ? 0 : 12;
+  const size = Math.max(0, Math.floor(Math.min(boardStack.clientWidth - rail, remaining)));
+  boardStack.style.setProperty('--board-size', `${size}px`);
+}
+
+// Observe the chrome, not just window resize: banners/review change available height.
+const phoneLayoutObserver = new ResizeObserver(sizePhoneBoard);
+phoneLayoutObserver.observe(boardStack);
+for (const node of boardStack.children) {
+  if (!node.classList.contains('board-area')) phoneLayoutObserver.observe(node);
+}
+phoneLayoutObserver.observe($('review-nav'));
+new ResizeObserver(() => {
+  if (phoneViewport.matches && !$('app').hidden) ground.redrawAll();
+}).observe(boardWrap);
+
+function sizeSheets() {
+  const viewport = window.visualViewport;
+  const height = viewport ? viewport.height : window.innerHeight;
+  const bottom = viewport ? Math.max(0, window.innerHeight - height - viewport.offsetTop) : 0;
+  for (const id of ['dlg-chat', 'dlg-moves']) {
+    $(id).style.setProperty('--sheet-viewport-height', `${height}px`);
+    $(id).style.setProperty('--sheet-bottom', `${bottom}px`);
+  }
+}
+
+function placeToast() {
+  const sheet = ['dlg-chat', 'dlg-moves'].map($).find((dlg) => dlg.open);
+  (sheet || document.body).append($('toast'));
+}
+
+function openSheet(id) {
+  if (!phoneViewport.matches) return;
+  sizeSheets();
+  $(id).showModal();
+  placeToast(); // A modal's top layer is above every ordinary z-index.
+  if (id === 'dlg-chat') {
+    setChatUnread(false);
+    $('chat-input').focus({ preventScroll: true });
+    $('chat').scrollTop = $('chat').scrollHeight;
+  } else scrollMoves(); // Closed dialogs have no scroll geometry.
+}
+
+for (const name of ['chat', 'moves']) {
+  $(`btn-${name}`).addEventListener('click', () => openSheet(`dlg-${name}`));
+  $(`btn-close-${name}`).addEventListener('click', () => $(`dlg-${name}`).close());
+  $(`dlg-${name}`).addEventListener('close', () => {
+    placeToast();
+    if (phoneViewport.matches && !$('app').hidden && !document.querySelector('dialog[open]')) {
+      $(`btn-${name}`).focus({ preventScroll: true });
+    }
+  });
+}
+$('chat-preview').addEventListener('click', () => openSheet('dlg-chat'));
+phoneViewport.addEventListener('change', placeForViewport);
+window.addEventListener('resize', sizeSheets);
+window.visualViewport?.addEventListener('resize', sizeSheets);
+window.visualViewport?.addEventListener('scroll', sizeSheets);
+
 // ---------------- connection ----------------
 function connect() {
   if (!app.token) return showGate();
@@ -143,6 +259,7 @@ function handle(msg) {
 
 // ---------------- gate ----------------
 function showGate(message) {
+  for (const id of ['dlg-chat', 'dlg-moves']) if ($(id).open) $(id).close();
   $('app').hidden = true;
   $('gate').hidden = false;
   if (message) $('gate-msg').textContent = message;
@@ -183,6 +300,7 @@ function render() {
   renderChat();
   renderClaude();
   renderEval();
+  sizePhoneBoard();
 }
 
 function renderLiveBoard() {
@@ -438,6 +556,7 @@ function moveCell(move, ply) {
 
 function renderMoves() {
   const list = $('moves');
+  const restoreSheetFocus = $('dlg-moves').open && list.contains(document.activeElement);
   const moves = app.review ? app.review.data.moves : app.loading ? [] : app.game.moves;
   const rows = [];
   for (let i = 0; i < moves.length; i += 2) {
@@ -447,6 +566,12 @@ function renderMoves() {
     rows.push(li);
   }
   list.replaceChildren(...rows);
+  if (restoreSheetFocus) (list.querySelector('.current') || $('btn-close-moves')).focus({ preventScroll: true });
+  scrollMoves();
+}
+
+function scrollMoves() {
+  const list = $('moves');
   const current = list.querySelector('.current');
   if (current) {
     // Scroll only the move list; keep the board in place on narrow screens.
@@ -466,6 +591,17 @@ function renderChat() {
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
   box.replaceChildren(...chat.map((m) => el('p', `msg ${m.sender}`, m.text)));
   const last = chat[chat.length - 1];
+  const sameGame = seenChatGame === app.game.game_id;
+  if (!sameGame || chat.length < seenChatCount) setChatUnread(false);
+  if (sameGame && phoneViewport.matches && !$('dlg-chat').open && chat.slice(seenChatCount).some((m) => m.sender === 'claude')) {
+    setChatUnread(true);
+  }
+  seenChatGame = app.game.game_id;
+  seenChatCount = chat.length;
+  const preview = $('chat-preview');
+  preview.hidden = last?.sender !== 'claude';
+  preview.textContent = preview.hidden ? '' : last.text.replace(/\s+/g, ' ').trim();
+  preview.title = preview.textContent;
   if (nearBottom || !app.chatKey || (last && last.sender === 'human')) box.scrollTop = box.scrollHeight;
   app.chatKey = key;
 }
@@ -672,6 +808,7 @@ function renderReview() {
   $('review').hidden = !on;
   $('btn-close-review').hidden = !on;
   $('panel-title').textContent = on ? 'Game review' : 'Claude';
+  $('moves-title').textContent = on ? 'Game review' : 'Moves';
   $('best-line').hidden = !app.review;
   $('review-nav').hidden = !app.review;
   if (app.review) {
@@ -769,7 +906,9 @@ function renderBestLine(data, ply) {
 }
 
 document.addEventListener('keydown', (event) => {
-  if (!app.review || event.target.closest('input, textarea, dialog')) return;
+  const dialog = event.target.closest('dialog') || ($('dlg-moves').open ? $('dlg-moves') : null);
+  if (!app.review || event.target.closest('input, textarea') || (dialog && dialog.id !== 'dlg-moves')) return;
+  if (dialog && event.key === 'Escape') return; // Native Escape closes the sheet, not the review.
   if (event.key === 'ArrowLeft') goTo(app.review.ply - 1);
   else if (event.key === 'ArrowRight') goTo(app.review.ply + 1);
   else if (event.key === 'Home') goTo(0);
@@ -798,4 +937,5 @@ function toast(text) {
   toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
 }
 
+placeForViewport();
 connect();
