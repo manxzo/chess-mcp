@@ -74,6 +74,9 @@ class ApiClient:
         body = {"engine": engine, "depth": depth, "time_s": time_s, "multipv": multipv}
         return await self._request("POST", "/api/analyze", json=body, timeout=60)
 
+    async def suggest(self) -> dict:
+        return await self._request("POST", "/api/suggest", timeout=30)
+
     async def games(self, limit: int) -> dict:
         return await self._request("GET", "/api/games", params={"limit": limit})
 

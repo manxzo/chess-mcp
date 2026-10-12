@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import tomllib
@@ -36,6 +37,8 @@ class EngineRegistry:
         self._specs = {s.name: s for s in specs}
         self._engines: dict[str, Engine] = {}
         self._dedicated: dict[str, Engine] = {}
+        self._limited: dict[int, Engine] = {}
+        self._limited_factory = None  # tests inject engines here
 
     @classmethod
     def discover(cls, config_file: Path | None, threads: int = 2) -> EngineRegistry:
@@ -50,10 +53,12 @@ class EngineRegistry:
         return cls(list(specs.values()))
 
     @classmethod
-    def with_engines(cls, engines: dict[str, Engine], dedicated: dict[str, Engine] | None = None) -> EngineRegistry:
+    def with_engines(cls, engines: dict[str, Engine], dedicated: dict[str, Engine] | None = None, limited=None) -> EngineRegistry:
+        """In-process engines for tests. `limited(elo)` builds the engine for a difficulty setting."""
         registry = cls([EngineSpec(name, "<in-process>", {}) for name in engines])
         registry._engines = dict(engines)
         registry._dedicated = dict(dedicated) if dedicated is not None else dict(engines)
+        registry._limited_factory = limited or (lambda elo: engines["stockfish"])
         return registry
 
     def names(self) -> list[str]:
@@ -83,6 +88,22 @@ class EngineRegistry:
             self._dedicated[name] = self._create(name)
         return self._dedicated[name]
 
+    def limited(self, elo: int, name: str = "stockfish") -> Engine:
+        """A separate process playing at about `elo` (UCI_LimitStrength). One per Elo; others are closed lazily."""
+        if elo not in self._limited:
+            if self._limited_factory is not None:
+                engine = self._limited_factory(elo)
+            else:
+                spec = self._specs.get(name)
+                if spec is None or not os.access(spec.path, os.X_OK):
+                    raise EngineError(f"{name} is needed for a difficulty setting but isn't available.")
+                engine = UciEngine(f"{name}@{elo}", spec.path, {"Threads": 1, "Hash": 32, "UCI_LimitStrength": True, "UCI_Elo": elo})
+            stale = [e for k, e in self._limited.items() if k != elo]
+            self._limited = {elo: engine}
+            for old in stale:
+                asyncio.get_running_loop().create_task(old.close())
+        return self._limited[elo]
+
     def _create(self, name: str) -> Engine:
         spec = self._specs.get(name)
         if spec is None:
@@ -93,5 +114,5 @@ class EngineRegistry:
         return UciEngine(spec.name, spec.path, spec.options)
 
     async def close_all(self) -> None:
-        for engine in {id(e): e for e in [*self._engines.values(), *self._dedicated.values()]}.values():
+        for engine in {id(e): e for e in [*self._engines.values(), *self._dedicated.values(), *self._limited.values()]}.values():
             await engine.close()

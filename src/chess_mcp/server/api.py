@@ -20,6 +20,7 @@ from chess_mcp.server.auth import token_matches
 from chess_mcp.server.state import AppState
 
 STATUS = {
+    "no_target": 400,
     "not_your_turn": 409,
     "game_in_progress": 409,
     "game_over": 409,
@@ -125,7 +126,7 @@ async def chat(state, request, body):
 @endpoint
 async def new_game(state, request, body):
     claude = parse_color(str(body.get("claude_color", "black")))
-    state.session.new_game(not claude, by="claude")
+    state.session.new_game(not claude, by="claude", elo=state.difficulty)
     return state.claude_view(mark_seen=True)
 
 
@@ -177,6 +178,31 @@ async def analyze(state, request, body):
     return {"engine": name, "depth": analysis.depth, "side_to_move": color_name(board.turn), "lines": lines}
 
 
+SUGGEST_SECONDS = 1.0
+
+
+@endpoint
+async def suggest(state, request, body):
+    """A move from Stockfish limited to the game's target Elo, for Claude to lean on."""
+    session = state.session
+    elo = session.elo
+    if elo is None:
+        raise GameError("no_target", "No target strength is set for this game; choose your own move.")
+    if session.status != "active":
+        raise GameError("game_over", "The game is over.")
+    if session.side_to_move() != "claude":
+        raise GameError("not_your_turn", "It is the human's move.")
+    board = session.board.copy()
+    engine = state.engines.limited(elo)
+    analysis = await engine.analyse(board, Limit(time_s=SUGGEST_SECONDS))
+    if not analysis.lines:
+        raise EngineError("the engine returned no move")
+    line = analysis.lines[0]
+    pv = [chess.Move.from_uci(u) for u in line.pv[:6]]
+    state.mark_claude_seen()
+    return {"elo": elo, "move": board.san(pv[0]), "score": line.score.text(board.turn), "pv": board.variation_san(pv)}
+
+
 @endpoint
 async def games(state, request, body):
     limit = int(_number(request.query_params.get("limit"), "limit", 1, 50, 10))
@@ -221,6 +247,7 @@ API_ROUTES = [
     Route("/api/resign", resign, methods=["POST"]),
     Route("/api/engines", engines, methods=["GET"]),
     Route("/api/analyze", analyze, methods=["POST"]),
+    Route("/api/suggest", suggest, methods=["POST"]),
     Route("/api/games", games, methods=["GET"]),
     Route("/api/review/{game_id}", review, methods=["GET"]),
 ]

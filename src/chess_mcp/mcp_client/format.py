@@ -5,6 +5,8 @@ from __future__ import annotations
 
 def format_view(v: dict, ui_link: str | None) -> str:
     lines = [f"Game {v['game_id']}. You play {v['you_play']}."]
+    if v.get("target_elo"):
+        lines.append(f"Target strength: about {v['target_elo']} Elo (the human's difficulty setting). Use suggest_move for your moves.")
     if v["status"] == "active":
         lines.append("It is YOUR move." if v["your_turn"] else f"Waiting for the human ({v['turn']}) to move.")
         if v["in_check"]:

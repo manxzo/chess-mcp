@@ -66,6 +66,7 @@ class Store:
                     "winner": rec.get("winner"),
                     "reason": rec.get("reason"),
                     "opening": rec.get("opening"),
+                    "elo": rec.get("elo"),
                     "moves": len(rec.get("moves", [])),
                     "reviewed": (self.games_dir / f"{rec['game_id']}.review.json").exists(),
                 }

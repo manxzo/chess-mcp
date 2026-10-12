@@ -22,6 +22,10 @@ How to play:
 3. On your move, think about the position yourself. You may call analyze to consult an
    engine whenever you like, but the choice of move is yours. Then call make_move, usually
    with a short, friendly message.
+   If the game shows a target strength (the user's difficulty setting), call suggest_move:
+   it returns a move from an engine limited to that Elo. Play it unless you have a clear
+   reason to deviate, and keep your own play around that level: do not use analyze at full
+   strength to find stronger moves. Coaching in chat and reviews stays at full strength.
 4. Answer the user's messages with send_message, or in make_move's message. Keep it brief.
 5. Keep looping until the game ends; don't stop waiting while a game is active unless the
    user asks. After the game, call get_review and talk the user through the key moments.
@@ -33,6 +37,7 @@ TOOL_NAMES = [
     "make_move",
     "send_message",
     "analyze",
+    "suggest_move",
     "list_engines",
     "get_review",
     "list_games",
@@ -109,6 +114,11 @@ class ChessTools:
         depth: search depth (1-30, default 18). time_s: seconds to think instead of a depth. multipv: number of lines (1-5).
         """
         return format_analysis(await self._call(self.client.analyze(engine, depth, time_s, multipv)))
+
+    async def suggest_move(self) -> str:
+        """A move from an engine limited to the game's target Elo (the user's difficulty setting). Only when a target is set and it is your move."""
+        r = await self._call(self.client.suggest())
+        return f"At about {r['elo']} Elo the engine plays {r['move']} ({r['score']}): {r['pv']}"
 
     async def list_engines(self) -> str:
         """List the chess engines the server has and whether each one is available."""

@@ -10,7 +10,7 @@ import time
 from starlette.websockets import WebSocket
 
 from chess_mcp.config import ServerConfig
-from chess_mcp.core.game import GameSession
+from chess_mcp.core.game import GameError, GameSession
 from chess_mcp.core.store import Store
 from chess_mcp.engines.registry import EngineRegistry
 from chess_mcp.review.book import opening_name
@@ -21,6 +21,20 @@ from chess_mcp.server.reviews import ReviewService
 
 log = logging.getLogger("chess_mcp")
 PRESENCE_SECONDS = 60
+ELO_MIN, ELO_MAX = 1320, 3190  # what Stockfish's UCI_Elo accepts
+
+
+def parse_elo(value) -> int | None:
+    """None means 'Claude': no target strength."""
+    if value is None:
+        return None
+    try:
+        elo = int(value)
+    except (TypeError, ValueError):
+        raise GameError("bad_elo", f"elo must be a whole number between {ELO_MIN} and {ELO_MAX}, or null.") from None
+    if not ELO_MIN <= elo <= ELO_MAX:
+        raise GameError("bad_elo", f"elo must be between {ELO_MIN} and {ELO_MAX}.")
+    return elo
 
 
 def load_session(store: Store) -> GameSession:
@@ -46,6 +60,10 @@ class AppState:
         self.live = LiveEval(engines, config.eval_depth, self.schedule_broadcast)
         self.reviews = ReviewService(store, engines, config.review_depth)
         self.claude = ClaudeRunner(config, store, self.token, self.session, self.schedule_broadcast)
+        try:
+            self.difficulty: int | None = parse_elo(store.load_settings().get("elo"))
+        except GameError:
+            self.difficulty = None
         self._claude_waits = 0
         self._claude_last_seen = 0.0
         self._last_presence = False
@@ -65,6 +83,14 @@ class AppState:
         self.live.schedule(s.board)
         self.schedule_broadcast()
         self.claude.on_session_change()
+
+    # ---- difficulty ----
+    def set_difficulty(self, elo: int | None) -> None:
+        """The target Elo for new games; also applies to the game in progress."""
+        self.difficulty = elo
+        self.store.save_settings({**self.store.load_settings(), "elo": elo})
+        self.session.set_elo(elo)
+        self.schedule_broadcast()
 
     # ---- access ----
     def accepts(self, secret: str | None) -> bool:
@@ -98,6 +124,7 @@ class AppState:
         state["seq"] = self._seq  # lets a tab drop a snapshot that arrives after a newer one
         state["claude_connected"] = self.claude_connected()
         state["claude"] = self.claude.view()
+        state["difficulty"] = {"elo": self.difficulty, "min": ELO_MIN, "max": ELO_MAX}
         state["eval"] = self.live.current(self.session.board.fen())
         return state
 

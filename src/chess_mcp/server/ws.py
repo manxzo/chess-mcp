@@ -10,7 +10,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from chess_mcp.core.game import GameError, parse_color
 from chess_mcp.engines.base import EngineError
-from chess_mcp.server.state import AppState
+from chess_mcp.server.state import AppState, parse_elo
 
 
 async def websocket_endpoint(ws: WebSocket) -> None:
@@ -56,7 +56,11 @@ async def handle_message(state: AppState, ws: WebSocket, msg: dict) -> None:
     elif kind == "chat":
         session.add_chat("human", _text(msg, "text"))
     elif kind == "new_game":
-        session.new_game(parse_color(str(msg.get("human_color", "white"))), by="human")
+        if "elo" in msg:
+            state.set_difficulty(parse_elo(msg["elo"]))
+        session.new_game(parse_color(str(msg.get("human_color", "white"))), by="human", elo=state.difficulty)
+    elif kind == "set_difficulty":
+        state.set_difficulty(parse_elo(msg.get("elo")))
     elif kind == "resign":
         session.resign("human")
     elif kind == "offer_draw":

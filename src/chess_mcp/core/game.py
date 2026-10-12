@@ -74,6 +74,7 @@ class GameSession:
     def _reset(self, human_color: chess.Color, game_id: str | None) -> None:
         self.game_id = game_id or new_game_id()
         self.started_at = time.time()
+        self.elo: int | None = None
         self.ended_at: float | None = None
         self.human_color = human_color
         self.board = chess.Board()
@@ -99,13 +100,19 @@ class GameSession:
         return "human" if self.board.turn == self.human_color else "claude"
 
     # ---- mutations ---------------------------------------------------
-    def new_game(self, human_color: chess.Color, by: Side) -> None:
+    def new_game(self, human_color: chess.Color, by: Side, elo: int | None = None) -> None:
         if self.status == "active" and len(self.board.move_stack) >= 2:
             raise GameError("game_in_progress", "Finish or resign the current game first.")
         self._reset(human_color, None)
+        self.elo = elo
         if by == "claude":
             self.claude_seen_game_id = self.game_id
         self._notify()
+
+    def set_elo(self, elo: int | None) -> None:
+        if elo != self.elo:
+            self.elo = elo
+            self._notify()
 
     def play(self, move: str, by: Side) -> str:
         self._require_active()
@@ -192,6 +199,7 @@ class GameSession:
             "legal_moves": [self.board.san(m) for m in self.board.legal_moves] if your_turn else [],
             "draw_offer": self.draw_offer,
             "new_messages": new_messages,
+            "target_elo": self.elo,
         }
         if mark_seen:
             changed = (
@@ -232,6 +240,7 @@ class GameSession:
             "winner": self.winner,
             "draw_offer": self.draw_offer,
             "chat": [asdict(m) for m in self.chat],
+            "elo": self.elo,
         }
 
     # ---- waiting ---------------------------------------------------------
@@ -289,6 +298,7 @@ class GameSession:
         return {
             "game_id": self.game_id,
             "started_at": self.started_at,
+            "elo": self.elo,
             "ended_at": self.ended_at,
             "human_color": color_name(self.human_color),
             "moves": [m.uci() for m in self.board.move_stack],
@@ -314,6 +324,7 @@ class GameSession:
                 raise ValueError(f"illegal move {uci} in saved game")
             session.board.push(move)
         session.started_at = record["started_at"]
+        session.elo = record.get("elo")
         session.ended_at = record["ended_at"]
         session.chat = [ChatMessage(**m) for m in record["chat"]]
         session.status = record["status"]
