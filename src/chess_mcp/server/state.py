@@ -14,6 +14,8 @@ from chess_mcp.core.game import GameSession
 from chess_mcp.core.store import Store
 from chess_mcp.engines.registry import EngineRegistry
 from chess_mcp.review.book import opening_name
+from chess_mcp.server.auth import token_matches
+from chess_mcp.server.claude_runner import ClaudeRunner
 from chess_mcp.server.live_eval import LiveEval
 from chess_mcp.server.reviews import ReviewService
 
@@ -43,6 +45,7 @@ class AppState:
         self.sockets: set[WebSocket] = set()
         self.live = LiveEval(engines, config.eval_depth, self.schedule_broadcast)
         self.reviews = ReviewService(store, engines, config.review_depth)
+        self.claude = ClaudeRunner(config, store, self.token, self.session, self.schedule_broadcast)
         self._claude_waits = 0
         self._claude_last_seen = 0.0
         self._last_presence = False
@@ -61,6 +64,16 @@ class AppState:
         self.store.save_current(s.to_record())
         self.live.schedule(s.board)
         self.schedule_broadcast()
+        self.claude.on_session_change()
+
+    # ---- access ----
+    def accepts(self, secret: str | None) -> bool:
+        """The browser may present the access token or the password; the API uses the token."""
+        if self.token is None:
+            return True
+        if token_matches(secret, self.token):
+            return True
+        return self.config.password is not None and token_matches(secret, self.config.password)
 
     # ---- broadcasting ----
     def schedule_broadcast(self) -> None:
@@ -84,6 +97,7 @@ class AppState:
         self._seq += 1
         state["seq"] = self._seq  # lets a tab drop a snapshot that arrives after a newer one
         state["claude_connected"] = self.claude_connected()
+        state["claude"] = self.claude.view()
         state["eval"] = self.live.current(self.session.board.fen())
         return state
 

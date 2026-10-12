@@ -16,7 +16,9 @@ install -d -o chess -g chess /var/lib/chess-mcp /opt/chess-mcp
 [ -d /opt/chess-mcp/.git ] || sudo -u chess git clone -q https://github.com/manxzo/chess-mcp.git /opt/chess-mcp
 sudo -u chess git -C /opt/chess-mcp checkout -q "$REF"
 sudo -u chess env HOME=/var/lib/chess-mcp UV_CACHE_DIR=/var/lib/chess-mcp/.cache/uv uv sync --frozen --no-dev --project /opt/chess-mcp -q
+sudo -u chess env HOME=/var/lib/chess-mcp bash -c 'curl -fsSL https://claude.ai/install.sh | bash' >/dev/null  # Claude Code, for the hosted Claude
 echo "CHESS_HOST=$IP" > /etc/chess-mcp.env
+echo "# CHESS_PASSWORD=choose-one   # what the web UI asks for; the generated token keeps working too" >> /etc/chess-mcp.env
 cp /opt/chess-mcp/deploy/chess.service /etc/systemd/system/chess.service
 systemctl daemon-reload && systemctl enable --now chess.service
 sleep 3

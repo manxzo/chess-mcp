@@ -12,6 +12,7 @@ Environment=CHESS_PUBLIC_URL=http://ts.nuc.chess.lan
 Environment=STOCKFISH_PATH=/usr/local/bin/stockfish
 Environment=HOME=/var/lib/chess-mcp
 Environment=UV_CACHE_DIR=/var/lib/chess-mcp/.cache/uv
+Environment=CHESS_CLAUDE_PATH=/var/lib/chess-mcp/.local/bin/claude
 EnvironmentFile=/etc/chess-mcp.env
 ExecStart=/usr/local/bin/uv run --frozen --no-dev chess-mcp server
 Restart=always

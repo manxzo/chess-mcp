@@ -54,6 +54,9 @@
           <h1 id="panel-title">Claude</h1>
           <p id="status" class="status" role="status"></p>
         </div>
+        <button id="btn-claude" class="icon" type="button" title="Claude settings" aria-label="Claude settings">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h6m4 0h6M4 17h10m4 0h2M10 4v6m4 4v6"/></svg>
+        </button>
         <button id="btn-close-review" class="icon" type="button" title="Back to the game" aria-label="Back to the game" hidden>×</button>
       </header>
       <div id="banner" class="banner" aria-live="polite" hidden></div>
@@ -84,9 +87,9 @@
   <section class="gate" id="gate" hidden>
     <div class="gate-card">
       <h1>Chess with Claude</h1>
-      <p id="gate-msg">Open the link Claude gives you, or paste it here.</p>
+      <p id="gate-msg" aria-live="polite">Enter the password to play.</p>
       <form id="gate-form">
-        <input id="gate-input" placeholder="Link or access token" autocomplete="off" aria-label="Link or access token">
+        <input id="gate-input" type="password" placeholder="Password" autocomplete="current-password" aria-label="Password">
         <button class="primary" type="submit">Continue</button>
       </form>
     </div>
@@ -112,6 +115,13 @@
         <button value="cancel">Cancel</button>
         <button value="ok" id="confirm-ok" class="primary">OK</button>
       </div>
+    </form>
+  </dialog>
+
+  <dialog id="dlg-claude" aria-labelledby="claude-title">
+    <form method="dialog">
+      <header class="dlg-head"><h2 id="claude-title">Claude settings</h2><button value="close" class="icon" aria-label="Close">×</button></header>
+      <div id="claude-settings"></div>
     </form>
   </dialog>
 

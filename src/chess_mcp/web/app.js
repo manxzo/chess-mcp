@@ -76,6 +76,7 @@ const app = {
   review: null, // { data, ply }
   loading: null, // { game_id, done, total }
   chatKey: '',
+  claudeKey: '',
 };
 
 const ground = Chessground($('board'), {
@@ -105,7 +106,7 @@ function connect() {
     if (event.code === 4401) {
       saved.del('chess-token');
       app.token = null;
-      showGate('That access link is not valid any more. Ask Claude for a new one.');
+      showGate('Wrong password. Try again.');
       return;
     }
     renderStatus();
@@ -180,6 +181,7 @@ function render() {
   renderControls();
   renderMoves();
   renderChat();
+  renderClaude();
   renderEval();
 }
 
@@ -227,7 +229,7 @@ function renderStatus() {
   else if (app.review) status.textContent = app.review.data.opening || 'Unnamed opening';
   else if (app.loading) status.textContent = 'Analysing the game…';
   else if (g.status !== 'active') status.textContent = 'Game over';
-  else if (!g.claude_connected) status.textContent = 'Claude isn’t connected. Ask Claude to play chess in Claude Code.';
+  else if (!g.claude_connected) status.textContent = claudeStatusText(g.claude);
   else status.textContent = g.turn === g.human_color ? 'Your move' : 'Claude is thinking…';
 }
 
@@ -245,10 +247,165 @@ function renderBanner() {
     } else if (g.status !== 'active') {
       banner.append(el('span', null, resultText(g)));
       if (g.moves.length) banner.append(button('Review', () => startReview(g.game_id), 'primary'));
+    } else if (!g.claude_connected && g.claude?.available && ['stopped', 'error'].includes(g.claude.status)) {
+      const signedIn = g.claude.auth?.logged_in;
+      banner.append(
+        el('span', null, signedIn ? 'Claude isn’t running.' : 'Sign in to Claude to play.'),
+        button(signedIn ? 'Start Claude' : 'Sign in', () => {
+          if (signedIn) send({ type: 'claude_start' });
+          else {
+            openClaude();
+            if (!app.game.claude.login?.busy) send({ type: 'claude_login' });
+          }
+        }, 'primary'),
+      );
     }
   }
   banner.hidden = banner.childElementCount === 0;
 }
+
+// ---------------- hosted Claude ----------------
+function claudeStatusText(claude) {
+  if (!claude?.available) return 'Claude isn’t connected. Ask Claude to play chess in Claude Code.';
+  switch (claude.status) {
+    case 'starting': return 'Claude is starting…';
+    case 'running': return 'Claude is connecting…';
+    case 'stopping': return 'Claude is stopping…';
+    case 'error': return claude.error ? `Claude stopped: ${claude.error}` : 'Claude stopped with an error.';
+    default: return claude.auth?.logged_in ? 'Claude isn’t running.' : 'Sign in to Claude to play.';
+  }
+}
+
+function openClaude() {
+  renderClaude();
+  const dlg = $('dlg-claude');
+  if (!dlg.open) dlg.showModal();
+}
+
+function renderClaude() {
+  const claude = app.game?.claude;
+  const key = JSON.stringify(claude ?? null);
+  if (key === app.claudeKey) return;
+  app.claudeKey = key;
+  const box = $('claude-settings');
+  const oldInput = $('claude-code');
+  const focused = box.contains(document.activeElement) ? document.activeElement.id : null;
+  const selection = oldInput ? [oldInput.selectionStart, oldInput.selectionEnd, oldInput.selectionDirection] : null;
+  box.replaceChildren();
+  if (!claude?.available) {
+    box.append(el('p', 'muted', claude ? 'Claude Code isn’t installed on this server. Run Claude from Claude Code elsewhere to play.' : 'Waiting for Claude settings…'));
+    return;
+  }
+
+  const section = (title) => {
+    const node = el('section', 'claude-section');
+    const heading = el('h3', null, title);
+    heading.id = `claude-${title.toLowerCase()}-title`;
+    node.setAttribute('aria-labelledby', heading.id);
+    node.append(heading);
+    box.append(node);
+    return node;
+  };
+  const action = (id, text, type, cls) => {
+    const node = button(text, () => send({ type }), cls);
+    node.id = id;
+    return node;
+  };
+  const signedIn = claude.auth?.logged_in;
+  const login = claude.login || {};
+  const account = section('Account');
+  const accountStatus = el('p', 'muted', signedIn ? (claude.auth.email ? `Signed in as ${claude.auth.email}` : 'Signed in') : 'Not signed in');
+  accountStatus.setAttribute('role', 'status');
+  account.append(accountStatus);
+  if (login.busy) {
+    account.append(el('p', null, 'Open the sign-in page, sign in with your Claude account, then paste the code it shows.'));
+    if (login.url) {
+      const link = el('a', 'claude-login-link', 'Open the sign-in page');
+      link.id = 'claude-login-link';
+      link.href = login.url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      account.append(link);
+    } else {
+      const preparing = el('p', 'muted', 'Preparing the sign-in link…');
+      preparing.setAttribute('role', 'status');
+      account.append(preparing);
+    }
+    const label = el('label', 'muted', 'Sign-in code');
+    label.htmlFor = 'claude-code';
+    const input = el('input');
+    input.id = 'claude-code';
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.autocapitalize = 'none';
+    input.spellcheck = false;
+    input.value = oldInput?.value || '';
+    input.disabled = !!login.verifying;
+    const submitCode = () => {
+      const code = input.value.trim();
+      if (code && !input.disabled) send({ type: 'claude_login_code', code });
+    };
+    const proceed = button('Continue', submitCode, 'primary');
+    proceed.id = 'claude-continue';
+    proceed.disabled = !!login.verifying;
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault(); // Do not submit the enclosing dialog form.
+        if (!event.isComposing) submitCode();
+      }
+    });
+    const row = el('div', 'claude-code-row');
+    row.append(input, proceed);
+    account.append(label, row);
+    if (login.verifying) {
+      const checking = el('p', 'muted', 'Checking the code…');
+      checking.setAttribute('role', 'status');
+      account.append(checking);
+    }
+    account.append(action('claude-cancel', 'Cancel', 'claude_login_cancel', 'link'));
+  } else {
+    account.append(signedIn
+      ? action('claude-logout', 'Sign out', 'claude_logout')
+      : action('claude-login', 'Sign in to Claude', 'claude_login', 'primary'));
+  }
+
+  const modelSection = section('Model');
+  const select = el('select');
+  select.id = 'claude-model';
+  select.setAttribute('aria-labelledby', 'claude-model-title');
+  for (const model of claude.models || []) {
+    const option = el('option', null, model.name);
+    option.value = model.id;
+    select.append(option);
+  }
+  select.value = claude.model;
+  select.addEventListener('change', () => send({ type: 'claude_model', model: select.value }));
+  modelSection.append(select);
+
+  const statusSection = section('Status');
+  const statuses = { stopped: 'Not running', starting: 'Starting…', running: 'Running', stopping: 'Stopping…', error: 'Stopped with an error' };
+  const status = el('p', null, statuses[claude.status] || 'Not running');
+  status.setAttribute('role', 'status');
+  statusSection.append(status);
+  if (claude.error) {
+    const error = el('p', 'claude-error', claude.error);
+    error.setAttribute('role', 'status');
+    statusSection.append(error);
+  }
+  const canStop = ['starting', 'running', 'stopping'].includes(claude.status);
+  const control = action('claude-control', canStop ? 'Stop Claude' : 'Start Claude', canStop ? 'claude_stop' : 'claude_start', 'primary');
+  control.disabled = claude.status === 'stopping' || (!canStop && !signedIn);
+  statusSection.append(control);
+
+  // State changes may arrive while the user is typing or using the keyboard.
+  const nextFocus = focused && $(focused);
+  if ($('dlg-claude').open && nextFocus && !nextFocus.disabled) {
+    nextFocus.focus({ preventScroll: true });
+    if (focused === 'claude-code' && selection) nextFocus.setSelectionRange(...selection);
+  }
+}
+
+$('btn-claude').addEventListener('click', openClaude);
 
 function renderControls() {
   const g = app.game;

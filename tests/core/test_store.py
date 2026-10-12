@@ -79,3 +79,14 @@ def test_save_is_atomic_json(tmp_path):
     store.save_current({"x": "é"})
     assert json.loads((tmp_path / "current.json").read_text(encoding="utf-8")) == {"x": "é"}
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_settings_round_trip_and_tolerate_garbage(tmp_path):
+    from chess_mcp.core.store import Store
+
+    store = Store(tmp_path)
+    assert store.load_settings() == {}
+    store.save_settings({"claude_model": "claude-sonnet-5-5"})
+    assert store.load_settings() == {"claude_model": "claude-sonnet-5-5"}
+    (tmp_path / "settings.json").write_text("[1, 2]")
+    assert store.load_settings() == {}

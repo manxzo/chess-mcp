@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -7,11 +9,21 @@ from chess_mcp.server.app import build_app
 from tests.fakes import FakeEngine
 
 TOKEN = "test-token"
+PASSWORD = "open-sesame"
+FAKE_CLAUDE = str(Path(__file__).resolve().parent.parent / "fake_claude.py")
 
 
 @pytest.fixture
-def config(tmp_path) -> ServerConfig:
-    return ServerConfig(data_dir=tmp_path, token=TOKEN, public_url="http://chess.test")
+def fake_claude_dir(tmp_path, monkeypatch) -> Path:
+    d = tmp_path / "fake-claude"
+    d.mkdir()
+    monkeypatch.setenv("FAKE_CLAUDE_DIR", str(d))
+    return d
+
+
+@pytest.fixture
+def config(tmp_path, fake_claude_dir) -> ServerConfig:
+    return ServerConfig(data_dir=tmp_path, token=TOKEN, password=PASSWORD, public_url="http://chess.test", claude_path=FAKE_CLAUDE)
 
 
 @pytest.fixture

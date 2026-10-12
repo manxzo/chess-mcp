@@ -37,10 +37,12 @@ async def lifespan(app: Starlette):
 
     ticker = asyncio.create_task(tick())
     state.live.schedule(state.session.board)
+    await state.claude.startup()
     try:
         yield
     finally:
         ticker.cancel()
+        await state.claude.shutdown()
         await state.engines.close_all()
 
 

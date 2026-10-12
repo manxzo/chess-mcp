@@ -95,6 +95,18 @@ class Store:
     def save_review(self, game_id: str, data: dict) -> None:
         self._write_json(self.games_dir / f"{game_id}.review.json", data)
 
+    # ---- settings ----
+    def load_settings(self) -> dict:
+        path = self.data_dir / "settings.json"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def save_settings(self, settings: dict) -> None:
+        self._write_json(self.data_dir / "settings.json", settings)
+
     # ---- token ----
     def token(self) -> str:
         path = self.data_dir / "token"

@@ -34,6 +34,8 @@ class ServerConfig:
     review_depth: int = 18
     eval_depth: int = 14
     engine_threads: int = 2
+    password: str | None = None
+    claude_path: str | None = None
 
     @classmethod
     def from_env(cls, no_auth: bool = False, env: Mapping[str, str] = os.environ) -> ServerConfig:
@@ -47,11 +49,23 @@ class ServerConfig:
             review_depth=int(env.get("CHESS_REVIEW_DEPTH", "18")),
             eval_depth=int(env.get("CHESS_EVAL_DEPTH", "14")),
             engine_threads=int(env.get("CHESS_ENGINE_THREADS", "2")),
+            password=env.get("CHESS_PASSWORD") or None,
+            claude_path=env.get("CHESS_CLAUDE_PATH") or None,
         )
 
     @property
     def ui_url(self) -> str:
         return (self.public_url or f"http://{self.host}:{self.port}").rstrip("/")
+
+    @property
+    def api_url(self) -> str:
+        """Where a process on this machine reaches the API (the hosted Claude's MCP client)."""
+        host = self.host
+        if host in ("", "0.0.0.0", "::"):
+            host = "127.0.0.1"
+        elif ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        return f"http://{host}:{self.port}"
 
 
 @dataclass

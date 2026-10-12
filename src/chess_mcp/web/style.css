@@ -83,10 +83,10 @@
 [hidden] { display: none !important; }
 html { min-height: 100%; background: var(--bg); }
 body { margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text); }
-button, input { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; }
 button { cursor: pointer; touch-action: manipulation; }
-button, input { -webkit-tap-highlight-color: transparent; }
-button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+button, input, select { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible, [tabindex]:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 3px;
 }
 button:disabled { cursor: default; }
@@ -175,7 +175,7 @@ cg-board square.check { background: radial-gradient(ellipse at center, var(--che
   box-shadow: 0 0 0 1px var(--line); overflow: hidden;
 }
 .panel-head { display: flex; flex-shrink: 0; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 24px 24px 20px; }
-.panel-head > div { min-width: 0; }
+.panel-head > div { min-width: 0; flex: 1; }
 .panel-head h1 { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -.5px; }
 .status { margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .icon { display: grid; place-items: center; flex-shrink: 0; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; font-size: 23px; line-height: 1; color: var(--muted); }
@@ -249,6 +249,18 @@ dialog::backdrop { background: var(--overlay); backdrop-filter: blur(3px); }
 dialog h2 { margin: 0 0 6px; font-size: 20px; font-weight: 600; letter-spacing: -.4px; }
 dialog p { font-size: 14px; }
 .dlg-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.claude-section { margin-top: 20px; min-width: 0; }
+.claude-section + .claude-section { padding-top: 16px; border-top: 1px solid var(--line); }
+.claude-section h3 { margin: 0 0 8px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.claude-section p { margin: 8px 0; overflow-wrap: anywhere; }
+.claude-section label { display: block; margin-top: 12px; font-size: 13px; }
+.claude-section button:not(.link) { min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); font-size: 14px; font-weight: 500; }
+.claude-section button:disabled, .claude-section input:disabled { opacity: .5; }
+.claude-code-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; }
+.claude-code-row input { flex: 1; }
+.claude-code-row button { flex-shrink: 0; }
+.claude-login-link { color: var(--accent); font-size: 14px; }
+.claude-error { color: var(--loss); white-space: pre-wrap; }
 .choices { display: flex; gap: 8px; margin-top: 20px; }
 .choices button, .gate button { flex: 1; min-height: 44px; padding: 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface-2); font-weight: 500; font-size: 14px; }
 .choices button:hover { border-color: var(--accent); background: var(--accent-soft); }
@@ -271,7 +283,7 @@ dialog p { font-size: 14px; }
 .gate-card h1 { margin: 0 0 8px; font-size: 24px; font-weight: 600; letter-spacing: -.7px; }
 .gate-card p { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
 .gate form { display: flex; flex-direction: column; gap: 12px; }
-.gate input { min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); font-size: 16px; }
+.gate input, .claude-section input, .claude-section select { min-width: 0; width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); font-size: 16px; }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); padding: 12px 18px; border-radius: 10px; background: var(--text); color: var(--bg); font-size: 13px; box-shadow: var(--shadow); z-index: 20; overflow-wrap: anywhere; }
 
 @media (max-width: 860px) {

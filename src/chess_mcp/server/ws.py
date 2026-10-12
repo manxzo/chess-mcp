@@ -10,14 +10,13 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from chess_mcp.core.game import GameError, parse_color
 from chess_mcp.engines.base import EngineError
-from chess_mcp.server.auth import token_matches
 from chess_mcp.server.state import AppState
 
 
 async def websocket_endpoint(ws: WebSocket) -> None:
     state: AppState = ws.app.state.chess
     await ws.accept()
-    if state.token is not None and not token_matches(ws.query_params.get("token"), state.token):
+    if not state.accepts(ws.query_params.get("token")):
         await ws.close(code=4401)
         return
     state.sockets.add(ws)
@@ -68,6 +67,20 @@ async def handle_message(state: AppState, ws: WebSocket, msg: dict) -> None:
         await ws.send_json({"type": "games", "games": state.store.list_games(50)})
     elif kind == "open_review":
         asyncio.get_running_loop().create_task(send_review(state, ws, _text(msg, "game_id")))
+    elif kind == "claude_start":
+        await state.claude.start()
+    elif kind == "claude_stop":
+        await state.claude.stop()
+    elif kind == "claude_model":
+        await state.claude.set_model(_text(msg, "model"))
+    elif kind == "claude_login":
+        await state.claude.login()
+    elif kind == "claude_login_code":
+        await state.claude.submit_code(_text(msg, "code"))
+    elif kind == "claude_login_cancel":
+        await state.claude.cancel_login()
+    elif kind == "claude_logout":
+        await state.claude.logout()
     else:
         raise GameError("bad_message", f"Unknown message type {kind!r}.")
 
