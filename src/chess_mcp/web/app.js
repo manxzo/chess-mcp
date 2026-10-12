@@ -2,940 +2,846 @@ import { Chessground } from 'https://cdn.jsdelivr.net/npm/chessground@9.2.1/+esm
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const RATINGS = {
-  brilliant: ['Brilliant', '!!'],
-  great: ['Great', '!'],
-  best: ['Best', '★'],
-  excellent: ['Excellent', '✦'],
-  good: ['Good', '✓'],
-  book: ['Book', '≡'],
-  inaccuracy: ['Inaccuracy', '?!'],
-  mistake: ['Mistake', '?'],
-  miss: ['Miss', '✕'],
-  blunder: ['Blunder', '??'],
+  brilliant: ['Brilliant', '!!'], great: ['Great', '!'], best: ['Best', '★'],
+  excellent: ['Excellent', '✦'], good: ['Good', '✓'], book: ['Book', '≡'],
+  inaccuracy: ['Inaccuracy', '?!'], mistake: ['Mistake', '?'], miss: ['Miss', '✕'], blunder: ['Blunder', '??'],
 };
-const KEY_RATINGS = new Set(['brilliant', 'great', 'miss', 'mistake', 'blunder']);
-const NO_ARROW = new Set(['book', 'best', 'brilliant', 'great']);
 const REASONS = {
-  checkmate: 'by checkmate',
-  resigned: 'by resignation',
-  draw_agreed: 'by agreement',
-  stalemate: 'by stalemate',
-  insufficient_material: '· insufficient material',
-  threefold_repetition: '· repetition',
-  fivefold_repetition: '· repetition',
-  fifty_moves: '· 50-move rule',
-  seventyfive_moves: '· 75-move rule',
+  checkmate: 'by checkmate', resigned: 'by resignation', draw_agreed: 'by agreement',
+  stalemate: 'by stalemate', insufficient_material: '— insufficient material',
+  threefold_repetition: '— repetition', fivefold_repetition: '— repetition',
+  fifty_moves: '— 50-move rule', seventyfive_moves: '— 75-move rule',
 };
-const SVG_NS = 'http://www.w3.org/2000/svg';
-
+const PRESETS = [['Beginner', 1320], ['Casual', 1500], ['Club', 1800], ['Strong', 2200], ['Expert', 2600], ['Master', 3000], ['Claude', null]];
 const $ = (id) => document.getElementById(id);
+const all = (selector) => [...document.querySelectorAll(selector)];
+const phone = matchMedia('(max-width: 860px)');
+const shortPhone = matchMedia('(max-width: 860px) and (min-width: 500px) and (max-height: 500px)');
+const reduced = matchMedia('(prefers-reduced-motion: reduce)');
+const other = (color) => color === 'white' ? 'black' : 'white';
+const saved = {
+  get(key) { try { return localStorage.getItem(key); } catch { return null; } },
+  set(key, value) { try { localStorage.setItem(key, value); } catch { /* Private browsing. */ } },
+  del(key) { try { localStorage.removeItem(key); } catch { /* Private browsing. */ } },
+};
 function el(tag, cls, text) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
   if (text != null) node.textContent = text;
   return node;
 }
-function svg(tag, attrs) {
-  const node = document.createElementNS(SVG_NS, tag);
-  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+function button(text, action, cls) {
+  const node = el('button', cls, text);
+  node.type = 'button';
+  node.addEventListener('click', action);
   return node;
 }
-function button(text, onClick, cls) {
-  const b = el('button', cls, text);
-  b.type = 'button';
-  b.title = text;
-  b.setAttribute('aria-label', text);
-  b.addEventListener('click', onClick);
-  return b;
+function svg(tag, attrs) {
+  const node = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
 }
-const saved = {
-  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
-  set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
-  del: (k) => { try { localStorage.removeItem(k); } catch { /* storage unavailable */ } },
-};
-
+function text(id, value) {
+  const node = $(id);
+  if (node.textContent !== String(value)) node.textContent = value;
+}
 function tokenFromUrl() {
   const url = new URL(location.href);
-  const token = url.searchParams.get('token');
-  if (token) {
-    saved.set('chess-token', token);
+  if (url.searchParams.has('token')) {
+    saved.set('chess-token', url.searchParams.get('token'));
     url.searchParams.delete('token');
     history.replaceState(null, '', url.pathname + url.search + url.hash);
   }
   return saved.get('chess-token');
 }
-
 const app = {
-  token: tokenFromUrl(),
-  ws: null,
-  retry: 0,
-  lastSeq: 0,
-  game: null,
-  flipped: false,
-  showEval: saved.get('chess-eval') === '1',
-  review: null, // { data, ply }
-  loading: null, // { game_id, done, total }
-  chatKey: '',
-  claudeKey: '',
+  token: tokenFromUrl(), ws: null, retry: 0, lastSeq: -1, game: null, connected: false,
+  flipped: false, showEval: saved.get('chess-eval') === '1', sound: saved.get('chess-sound') !== '0',
+  tab: 'moves', page: 'play', unread: false, review: null, requestId: null, loading: null,
+  pendingPly: null, pendingMove: null, games: null, boardKey: '', movesKey: '', bannerKey: '', chatKey: '',
+  playersKey: '', modelsKey: '', settingsElo: undefined,
 };
-
+let reconnectTimer, pendingTimer, toastTimer;
 const ground = Chessground($('board'), {
-  coordinates: true,
-  animation: { duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 160 },
+  fen: START_FEN, coordinates: true,
+  animation: { enabled: !reduced.matches, duration: reduced.matches ? 0 : 160 },
   highlight: { lastMove: true, check: true },
-  movable: { free: false, showDests: true, events: { after: onUserMove } },
-  premovable: { enabled: false },
+  movable: { free: false, color: undefined, showDests: true, events: { after: onUserMove } },
+  premovable: { enabled: true, showDests: true, events: {
+    set() { text('status', 'Premove set'); },
+    unset() { renderStatus(); },
+  } },
   drawable: { enabled: true, visible: true },
 });
+reduced.addEventListener('change', () => ground.set({ animation: { enabled: !reduced.matches, duration: reduced.matches ? 0 : 160 } }));
 
-// One set of live elements; desktop anchors preserve their original order.
-const phoneViewport = matchMedia('(max-width: 860px)');
-const viewportHomes = new Map();
-for (const id of ['banner', 'status', 'btn-claude', 'btn-close-review', 'review-nav', 'review', 'moves', 'chat', 'chat-form']) {
-  const node = $(id);
-  const anchor = document.createComment(`${id} desktop position`);
-  node.before(anchor);
-  viewportHomes.set(id, anchor);
-}
-const boardStack = document.querySelector('.board-stack');
-const boardWrap = document.querySelector('.board-wrap');
-let placedForPhone = null;
-let seenChatGame = null;
-let seenChatCount = 0;
-
-function setChatUnread(unread) {
-  $('chat-unread').hidden = !unread;
-  $('btn-chat').setAttribute('aria-label', unread ? 'Chat, unread message from Claude' : 'Chat');
-}
-
+// Keep the same input and scroll nodes alive across snapshots and breakpoints.
 function placeForViewport() {
-  const phone = phoneViewport.matches;
-  if (phone === placedForPhone) return;
-  const focused = document.activeElement;
-  const activeSheet = ['dlg-chat', 'dlg-moves'].find((id) => $(id).open);
-  for (const id of ['dlg-chat', 'dlg-moves']) if ($(id).open) $(id).close();
-  if (phone) {
-    $('mobile-status').prepend($('banner'));
-    $('mobile-status-row').append($('status'), $('btn-claude'), $('btn-close-review'));
-    $('best-line').after($('review-nav'));
-    $('chat-sheet-content').append($('chat'), $('chat-form'));
-    $('moves-sheet-content').append($('review'), $('moves'));
-  } else {
-    for (const [id, anchor] of viewportHomes) anchor.after($(id));
-    boardStack.style.removeProperty('--board-size');
-    setChatUnread(false);
-  }
-  placedForPhone = phone;
-  // Avoid leaving focus in a hidden panel, sheet, or phone-only control.
-  if (phone && ($('dlg-chat').contains(focused) || $('dlg-moves').contains(focused))) {
-    $($('dlg-chat').contains(focused) ? 'btn-chat' : 'btn-moves').focus({ preventScroll: true });
-  } else if (!phone && (activeSheet || focused?.closest('.mobile-only'))) {
-    (focused?.matches('#chat-input, #chat-form button, #moves button, #graph') ? focused : $('board')).focus({ preventScroll: true });
-  } else if (focused?.isConnected) focused.focus({ preventScroll: true });
-  requestAnimationFrame(() => {
-    sizePhoneBoard();
-    ground.redrawAll();
-    scrollMoves();
-    if (!phone) $('chat').scrollTop = $('chat').scrollHeight;
-  });
+  const focus = document.activeElement;
+  const chatScroll = $('chat').scrollTop, reportScroll = $('report').scrollTop;
+  if ($('dlg-chat').open) $('dlg-chat').close();
+  (phone.matches ? $('mobile-footer') : document.querySelector('.panel')).append($('game-footer'));
+  (phone.matches ? $('chat-sheet-home') : $('chat-pane')).append($('chat-content'));
+  (phone.matches ? $('mobile-report') : $('report-home')).append($('report'));
+  $('chat').scrollTop = chatScroll;
+  $('report').scrollTop = reportScroll;
+  renderView();
+  if (focus?.isConnected && focus.getClientRects().length) focus.focus({ preventScroll: true });
+  requestAnimationFrame(() => { sizeBoard(); ground.redrawAll(); });
 }
-
-function sizePhoneBoard() {
-  if (!phoneViewport.matches || $('app').hidden) return;
-  const rows = [...boardStack.children].filter((node) => !node.classList.contains('board-area') && node.getClientRects().length);
-  const gap = parseFloat(getComputedStyle(boardStack).rowGap) || 0;
-  const remaining = boardStack.clientHeight - rows.reduce((height, node) => height + node.getBoundingClientRect().height, 0) - rows.length * gap;
-  const rail = $('evalbar').hidden ? 0 : 12;
-  const size = Math.max(0, Math.floor(Math.min(boardStack.clientWidth - rail, remaining)));
-  boardStack.style.setProperty('--board-size', `${size}px`);
+function sizeBoard() {
+  if ($('app').hidden || $('board-column').hidden) return;
+  const stack = $('board-stack');
+  const rows = [...stack.children].filter((node) => node.id !== 'board-area' && node.getClientRects().length && (!shortPhone.matches || node.classList.contains('player')));
+  const gap = parseFloat(getComputedStyle(stack).rowGap) || 0;
+  const remaining = stack.clientHeight - rows.reduce((sum, node) => sum + node.getBoundingClientRect().height, 0) - gap * rows.length;
+  const rail = app.showEval ? 16 : 0;
+  const availableWidth = shortPhone.matches ? stack.clientWidth - 210 - gap : stack.clientWidth;
+  const size = Math.max(0, Math.floor(Math.min(availableWidth - rail, remaining)));
+  stack.style.setProperty('--board-size', size + 'px');
 }
-
-// Observe the chrome, not just window resize: banners/review change available height.
-const phoneLayoutObserver = new ResizeObserver(sizePhoneBoard);
-phoneLayoutObserver.observe(boardStack);
-for (const node of boardStack.children) {
-  if (!node.classList.contains('board-area')) phoneLayoutObserver.observe(node);
-}
-phoneLayoutObserver.observe($('review-nav'));
-new ResizeObserver(() => {
-  if (phoneViewport.matches && !$('app').hidden) ground.redrawAll();
-}).observe(boardWrap);
-
+const layoutObserver = new ResizeObserver(sizeBoard);
+layoutObserver.observe($('board-stack'));
+for (const node of $('board-stack').children) if (node.id !== 'board-area') layoutObserver.observe(node);
+layoutObserver.observe($('game-footer'));
+new ResizeObserver(() => ground.redrawAll()).observe($('board-wrap'));
+phone.addEventListener('change', placeForViewport);
+shortPhone.addEventListener('change', () => requestAnimationFrame(sizeBoard));
 function sizeSheets() {
   const viewport = window.visualViewport;
-  const height = viewport ? viewport.height : window.innerHeight;
-  const bottom = viewport ? Math.max(0, window.innerHeight - height - viewport.offsetTop) : 0;
-  for (const id of ['dlg-chat', 'dlg-moves']) {
-    $(id).style.setProperty('--sheet-viewport-height', `${height}px`);
-    $(id).style.setProperty('--sheet-bottom', `${bottom}px`);
-  }
+  const height = viewport?.height ?? innerHeight;
+  const bottom = viewport ? Math.max(0, innerHeight - height - viewport.offsetTop) : 0;
+  document.documentElement.style.setProperty('--visual-height', height + 'px');
+  document.documentElement.style.setProperty('--keyboard-bottom', bottom + 'px');
 }
-
-function placeToast() {
-  const sheet = ['dlg-chat', 'dlg-moves'].map($).find((dlg) => dlg.open);
-  (sheet || document.body).append($('toast'));
-}
-
-function openSheet(id) {
-  if (!phoneViewport.matches) return;
-  sizeSheets();
-  $(id).showModal();
-  placeToast(); // A modal's top layer is above every ordinary z-index.
-  if (id === 'dlg-chat') {
-    setChatUnread(false);
-    $('chat-input').focus({ preventScroll: true });
-    $('chat').scrollTop = $('chat').scrollHeight;
-  } else scrollMoves(); // Closed dialogs have no scroll geometry.
-}
-
-for (const name of ['chat', 'moves']) {
-  $(`btn-${name}`).addEventListener('click', () => openSheet(`dlg-${name}`));
-  $(`btn-close-${name}`).addEventListener('click', () => $(`dlg-${name}`).close());
-  $(`dlg-${name}`).addEventListener('close', () => {
-    placeToast();
-    if (phoneViewport.matches && !$('app').hidden && !document.querySelector('dialog[open]')) {
-      $(`btn-${name}`).focus({ preventScroll: true });
-    }
-  });
-}
-$('chat-preview').addEventListener('click', () => openSheet('dlg-chat'));
-phoneViewport.addEventListener('change', placeForViewport);
-window.addEventListener('resize', sizeSheets);
 window.visualViewport?.addEventListener('resize', sizeSheets);
 window.visualViewport?.addEventListener('scroll', sizeSheets);
+window.addEventListener('resize', sizeSheets);
 
-// ---------------- connection ----------------
+// Native modal dialogs provide a focus trap, Escape handling and focus restoration.
+function openDialog(id) {
+  sizeSheets();
+  if (!$(id).open) $(id).showModal();
+}
+all('[data-close]').forEach((node) => node.addEventListener('click', () => node.closest('dialog').close()));
+all('dialog').forEach((dialog) => dialog.addEventListener('close', () => {
+  if (dialog.contains($('toast'))) document.body.append($('toast'));
+  renderView();
+}));
+function confirmBox(message, label) {
+  text('confirm-text', message); text('confirm-ok', label);
+  const dialog = $('dlg-confirm');
+  dialog.returnValue = '';
+  openDialog('dlg-confirm');
+  return new Promise((resolve) => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'ok'), { once: true }));
+}
+function showGate(message = 'Enter the password to play.') {
+  all('dialog[open]').forEach((dialog) => dialog.close());
+  $('app').hidden = true; $('gate').hidden = false;
+  text('gate-msg', message);
+  $('gate-input').focus();
+}
 function connect() {
+  clearTimeout(reconnectTimer);
   if (!app.token) return showGate();
-  hideGate();
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  const ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(app.token)}`);
+  $('gate').hidden = true; $('app').hidden = false;
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws?token=' + encodeURIComponent(app.token));
   app.ws = ws;
+  app.connected = false;
+  renderStatus();
+  requestAnimationFrame(sizeBoard);
   ws.onopen = () => {
-    app.lastSeq = 0; // sequence numbers restart with each server process
-    app.retry = 0;
+    if (app.ws !== ws) return;
+    app.connected = true; app.retry = 0; app.lastSeq = -1;
+    renderStatus();
+    if (app.loading) send({ type: 'open_review', game_id: app.requestId });
+    if ($('dlg-games').open || app.tab === 'review' || app.page === 'review') send({ type: 'list_games' });
   };
-  ws.onmessage = (event) => handle(JSON.parse(event.data));
+  ws.onmessage = (event) => {
+    if (app.ws !== ws) return;
+    try { handle(JSON.parse(event.data)); } catch (error) { console.error('Could not process chess update', error); toast('Could not read a game update.'); }
+  };
   ws.onclose = (event) => {
     if (app.ws !== ws) return;
-    app.ws = null;
+    app.ws = null; app.connected = false;
+    clearPending();
+    ground.cancelPremove();
     if (event.code === 4401) {
-      saved.del('chess-token');
-      app.token = null;
+      saved.del('chess-token'); app.token = null;
       showGate('Wrong password. Try again.');
       return;
     }
-    renderStatus();
-    setTimeout(connect, Math.min(10000, 500 * 2 ** app.retry++));
+    render();
+    reconnectTimer = setTimeout(connect, Math.min(15000, 500 * 2 ** Math.min(app.retry++, 5)));
   };
 }
-
-function send(msg) {
-  if (app.ws && app.ws.readyState === WebSocket.OPEN) app.ws.send(JSON.stringify(msg));
-  else toast('Reconnecting…');
+function send(message) {
+  if (app.ws?.readyState !== WebSocket.OPEN) { toast('Reconnecting… Please try again when connected.'); return false; }
+  app.ws.send(JSON.stringify(message));
+  return true;
 }
-
-function handle(msg) {
-  if (msg.type === 'state') {
-    if (msg.seq <= app.lastSeq) return; // an older snapshot overtaken by a newer one
-    app.lastSeq = msg.seq;
-    app.game = msg;
-    render();
-  } else if (msg.type === 'error') {
-    toast(msg.message);
-    if (app.loading && !app.review) closeReview();
-    else render();
-  } else if (msg.type === 'games') {
-    renderGames(msg.games);
-  } else if (msg.type === 'review_progress') {
-    if (app.loading && app.loading.game_id === msg.game_id) {
-      app.loading = msg;
-      renderReview();
-    }
-  } else if (msg.type === 'review') {
-    openReview(msg.review);
-  }
-}
-
-// ---------------- gate ----------------
-function showGate(message) {
-  for (const id of ['dlg-chat', 'dlg-moves']) if ($(id).open) $(id).close();
-  $('app').hidden = true;
-  $('gate').hidden = false;
-  if (message) $('gate-msg').textContent = message;
-  $('gate-input').focus();
-}
-
-function hideGate() {
-  $('gate').hidden = true;
-  $('app').hidden = false;
-  requestAnimationFrame(() => ground.redrawAll());
-}
-
 $('gate-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  const raw = $('gate-input').value.trim();
-  if (!raw) return;
-  let token = raw;
-  try { token = new URL(raw).searchParams.get('token') || raw; } catch { /* not a URL: use as the token */ }
-  saved.set('chess-token', token);
-  app.token = token;
-  connect();
+  const token = $('gate-input').value;
+  if (!token) return;
+  app.token = token; saved.set('chess-token', token); connect();
 });
-
-// ---------------- rendering ----------------
-const humanColor = () => (app.game ? app.game.human_color : 'white');
-const other = (color) => (color === 'white' ? 'black' : 'white');
-const orientation = () => (app.flipped ? other(humanColor()) : humanColor());
-
-function render() {
-  if (!app.game) return;
-  if (app.review) renderReviewBoard();
-  else renderLiveBoard();
-  renderPlayers();
-  renderStatus();
-  renderBanner();
-  renderControls();
-  renderMoves();
-  renderChat();
-  renderClaude();
-  renderEval();
-  sizePhoneBoard();
-}
-
-function renderLiveBoard() {
-  const g = app.game;
-  const myTurn = g.status === 'active' && g.turn === g.human_color;
-  ground.set({
-    fen: g.fen,
-    orientation: orientation(),
-    turnColor: g.turn,
-    lastMove: g.last_move,
-    check: g.check,
-    movable: { color: myTurn ? g.human_color : undefined, dests: new Map(Object.entries(g.dests || {})) },
-    drawable: { autoShapes: [] },
-  });
-}
-
-function renderPlayers() {
-  const g = app.game;
-  const label = (color) => {
-    const isHuman = color === g.human_color;
-    const row = el('div', 'player-name');
-    row.append(el('span', `dot ${color}`), el('span', null, isHuman ? 'You' : 'Claude'));
-    if (!isHuman && !g.claude_connected && !app.review) row.append(el('span', 'presence', 'offline'));
-    if (app.review) {
-      const acc = app.review.data[color].accuracy;
-      if (acc != null) row.append(el('span', 'acc', acc.toFixed(1)));
+function handle(message) {
+  if (message.type === 'state') {
+    if (message.seq <= app.lastSeq) return;
+    app.lastSeq = message.seq;
+    const previous = app.game;
+    app.game = message;
+    if (previous?.game_id !== message.game_id) {
+      clearPending(); ground.cancelPremove(); app.boardKey = '';
     }
-    return row;
-  };
-  $('player-bottom').replaceChildren(label(orientation()));
-  $('player-top').replaceChildren(label(other(orientation())));
-}
-
-function resultText(g) {
-  const who = g.winner == null ? 'Draw' : g.winner === g.human_color ? 'You won' : 'Claude won';
-  return `${who} ${REASONS[g.status] || ''}`.trim();
-}
-
-function renderStatus() {
-  const g = app.game;
-  const status = $('status');
-  if (!g) return;
-  if (!app.ws) status.textContent = 'Reconnecting…';
-  else if (app.review) status.textContent = app.review.data.opening || 'Unnamed opening';
-  else if (app.loading) status.textContent = 'Analysing the game…';
-  else if (g.status !== 'active') status.textContent = 'Game over';
-  else if (!g.claude_connected) status.textContent = claudeStatusText(g.claude);
-  else status.textContent = g.turn === g.human_color ? 'Your move' : 'Claude is thinking…';
-}
-
-function renderBanner() {
-  const g = app.game;
-  const banner = $('banner');
-  banner.replaceChildren();
-  if (!app.review && !app.loading) {
-    if (g.status === 'active' && g.draw_offer === 'claude') {
-      banner.append(
-        el('span', null, 'Claude offers a draw'),
-        button('Decline', () => send({ type: 'answer_draw', accept: false })),
-        button('Accept', () => send({ type: 'answer_draw', accept: true }), 'primary'),
-      );
-    } else if (g.status !== 'active') {
-      banner.append(el('span', null, resultText(g)));
-      if (g.moves.length) banner.append(button('Review', () => startReview(g.game_id), 'primary'));
-    } else if (!g.claude_connected && g.claude?.available && ['stopped', 'error'].includes(g.claude.status)) {
-      const signedIn = g.claude.auth?.logged_in;
-      banner.append(
-        el('span', null, signedIn ? 'Claude isn’t running.' : 'Sign in to Claude to play.'),
-        button(signedIn ? 'Start Claude' : 'Sign in', () => {
-          if (signedIn) send({ type: 'claude_start' });
-          else {
-            openClaude();
-            if (!app.game.claude.login?.busy) send({ type: 'claude_login' });
-          }
-        }, 'primary'),
-      );
+    if (app.pendingMove && (message.fen !== app.pendingMove.fen || message.status !== 'active')) clearPending();
+    if (previous?.game_id === message.game_id) {
+      if (previous.status === 'active' && message.status !== 'active') playSound('end');
+      else if (message.moves.length > previous.moves.length) {
+        const san = message.moves.at(-1).san;
+        playSound(/[+#]/.test(san) ? 'check' : san.includes('x') ? 'capture' : 'move');
+      }
     }
+    if ($('dlg-promotion').open && (message.status !== 'active' || message.game_id !== promotion?.gameId || message.fen !== promotion?.fen)) $('dlg-promotion').close();
+    render();
+  } else if (message.type === 'error') {
+    clearPending(); app.boardKey = ''; render();
+    if (app.loading && ['unknown_game', 'review_failed', 'no_engine', 'engine_failed'].includes(message.code)) {
+      app.loading = null; app.requestId = null; renderReport();
+      app.boardKey = ''; renderBoard(); renderStatus(); renderControls();
+    }
+    toast(message.message);
+  } else if (message.type === 'games') {
+    app.games = message.games; renderGames();
+  } else if (message.type === 'review_progress' && message.game_id === app.requestId && app.loading) {
+    app.loading = message; renderReport();
+  } else if (message.type === 'review' && message.review.game_id === app.requestId) {
+    app.loading = null;
+    app.review = { data: message.review, ply: app.pendingPly ?? message.review.moves.length };
+    app.review.ply = Math.max(0, Math.min(message.review.moves.length, app.review.ply));
+    app.pendingPly = null; app.boardKey = ''; app.movesKey = '';
+    buildReport(); render();
   }
-  banner.hidden = banner.childElementCount === 0;
 }
 
-// ---------------- hosted Claude ----------------
+function humanColor() {
+  if (app.review) return ['Human', 'You'].includes(app.review.data.white.name) ? 'white' : 'black';
+  return app.game?.human_color || 'white';
+}
+function orientation() { return app.flipped ? other(humanColor()) : humanColor(); }
+function resultText(game) {
+  return (game.winner == null ? 'Draw' : game.winner === game.human_color ? 'You won' : 'Claude won') + ' ' + (REASONS[game.status] || game.reason || game.result || '');
+}
 function claudeStatusText(claude) {
-  if (!claude?.available) return 'Claude isn’t connected. Ask Claude to play chess in Claude Code.';
+  if (!claude?.available) return "Claude isn't connected. Ask Claude to play chess in Claude Code.";
   switch (claude.status) {
     case 'starting': return 'Claude is starting…';
     case 'running': return 'Claude is connecting…';
     case 'stopping': return 'Claude is stopping…';
-    case 'error': return claude.error ? `Claude stopped: ${claude.error}` : 'Claude stopped with an error.';
-    default: return claude.auth?.logged_in ? 'Claude isn’t running.' : 'Sign in to Claude to play.';
+    case 'error': return 'Claude stopped: ' + (claude.error || 'Unknown error');
+    default: return claude.auth?.logged_in ? "Claude isn't running." : 'Sign in to Claude to play.';
   }
 }
-
-function openClaude() {
-  renderClaude();
-  const dlg = $('dlg-claude');
-  if (!dlg.open) dlg.showModal();
+function render() {
+  if (!app.game) { renderView(); return; }
+  renderBoard(); renderPlayers(); renderStatus(); renderBanner(); renderControls();
+  renderMoves(); renderChat(); renderClaude(); renderEval(); renderReport(); renderView();
+  requestAnimationFrame(sizeBoard);
 }
+function renderBoard() {
+  const game = app.game, review = app.review;
+  if (app.pendingMove && app.pendingMove.fen === game.fen && !review && !app.loading) {
+    ground.set({ orientation: orientation() });
+    return;
+  }
+  const move = review?.data.moves[review.ply - 1];
+  const reviewing = Boolean(review || app.loading);
+  const fen = review ? move?.fen || START_FEN : game.fen;
+  const turn = review ? (fen.split(' ')[1] === 'w' ? 'white' : 'black') : game.turn;
+  const key = JSON.stringify([game.game_id, fen, orientation(), reviewing, app.connected, game.status, reviewing ? null : game.dests, Boolean(app.pendingMove), move?.best_uci]);
+  // Eval/chat/runner-only updates must never reset a drag, selection, or premove.
+  if (key === app.boardKey) return;
+  app.boardKey = key;
+  const active = !reviewing && game.status === 'active' && app.connected && !app.pendingMove;
+  const shapes = move?.best_uci && move.best_uci !== move.uci
+    ? [{ orig: move.best_uci.slice(0, 2), dest: move.best_uci.slice(2, 4), brush: 'green' }] : [];
+  ground.set({
+    fen, orientation: orientation(), turnColor: turn,
+    lastMove: review ? (move ? [move.uci.slice(0, 2), move.uci.slice(2, 4)] : undefined) : game.last_move || undefined,
+    check: review ? Boolean(move && /[+#]$/.test(move.san)) : game.check,
+    movable: { color: active ? game.human_color : undefined, dests: new Map(active ? Object.entries(game.dests || {}) : []) },
+    premovable: { enabled: active },
+    drawable: { autoShapes: shapes },
+  });
+  if (active && game.turn === game.human_color && ground.state.premovable.current) {
+    const [from, to] = ground.state.premovable.current;
+    const played = Boolean(game.dests?.[from]?.includes(to)) && ground.playPremove();
+    if (!played) ground.cancelPremove();
+  } else if (!active) ground.cancelPremove();
+}
+function renderPlayers() {
+  const game = app.game;
+  const key = JSON.stringify([orientation(), humanColor(), game.claude_connected, game.elo, app.review?.data]);
+  if (key === app.playersKey) return;
+  app.playersKey = key;
+  const player = (color) => {
+    const human = color === humanColor();
+    const row = el('div', 'player-info');
+    row.append(el('span', 'avatar ' + (human ? 'human-avatar' : ''), human ? '●' : '♞'));
+    const identity = el('div', 'identity');
+    identity.append(el('strong', '', human ? 'You' : 'Claude'));
+    const subtitle = app.review ? (human ? 'Your game' : 'Your opponent') : human ? 'Playing ' + color : game.elo == null ? 'Claude' : String(game.elo);
+    identity.append(el('span', 'player-subtitle', subtitle));
+    row.append(identity);
+    if (!human && !game.claude_connected && !app.review) row.append(el('span', 'offline', 'offline'));
+    if (app.review) {
+      const accuracy = app.review.data[color].accuracy;
+      const acc = el('span', 'player-accuracy', accuracy == null ? '—' : accuracy.toFixed(1) + '%');
+      acc.title = 'Accuracy'; row.append(acc);
+    } else row.append(el('span', 'color-piece ' + color, color === 'white' ? '♔' : '♚'));
+    return row;
+  };
+  $('player-top').replaceChildren(player(other(orientation())));
+  $('player-bottom').replaceChildren(player(orientation()));
+}
+function renderStatus() {
+  const game = app.game;
+  let value = 'Connecting…';
+  if (!app.connected) value = app.retry ? 'Reconnecting…' : 'Connecting…';
+  else if (app.loading) value = 'Analysing the game…';
+  else if (app.review) value = 'Reviewing your game';
+  else if (game?.status !== 'active' && game) value = resultText(game);
+  else if (game && !game.claude_connected) value = claudeStatusText(game.claude);
+  else if (ground.state.premovable.current) value = 'Premove set';
+  else if (game) value = game.turn === game.human_color ? 'Your move' : 'Claude is thinking…';
+  text('status', value); $('status').title = value;
+}
+function renderBanner() {
+  const game = app.game, box = $('banner');
+  const key = JSON.stringify([app.review != null, app.loading != null, game.status, game.winner, game.reason, game.draw_offer, game.claude_connected, game.claude?.status, game.claude?.auth?.logged_in, game.claude?.available, game.moves.length === 0]);
+  if (key === app.bannerKey) return;
+  app.bannerKey = key;
+  const nodes = [];
+  if (!app.review && !app.loading) {
+    if (game.status === 'active' && game.draw_offer === 'claude') {
+      nodes.push(el('span', '', 'Claude offers a draw'), button('Decline', () => send({ type: 'answer_draw', accept: false })), button('Accept', () => send({ type: 'answer_draw', accept: true }), 'primary'));
+    } else if (game.status !== 'active') {
+      nodes.push(el('span', '', resultText(game)), button('Review', () => startReview(app.game.game_id), 'primary'));
+    } else if (!game.claude_connected && game.claude?.available && ['stopped', 'error'].includes(game.claude.status)) {
+      const signedIn = game.claude.auth?.logged_in;
+      nodes.push(el('span', '', signedIn ? "Claude isn't running." : 'Ready when you are.'), button(signedIn ? 'Start Claude' : 'Sign in', () => {
+        if (signedIn) send({ type: 'claude_start' });
+        else { openDialog('dlg-more'); if (!app.game.claude.login?.busy) send({ type: 'claude_login' }); }
+      }, 'primary'));
+    }
+  }
+  box.replaceChildren(...nodes); box.hidden = !nodes.length;
+}
+function renderControls() {
+  const active = app.connected && app.game?.status === 'active' && !app.review && !app.loading;
+  $('btn-draw').disabled = !active || app.game.draw_offer === 'human';
+  $('btn-draw').title = app.game?.draw_offer === 'human' ? 'Draw offered' : 'Offer draw';
+  $('btn-resign').disabled = !active;
+  $('btn-new').disabled = !app.connected;
+  all('[data-action="eval"]').forEach((node) => node.setAttribute('aria-pressed', String(app.showEval)));
+  all('[data-action="sound"]').forEach((node) => node.setAttribute('aria-pressed', String(app.sound)));
+}
+function renderEval() {
+  const move = app.review?.data.moves[app.review.ply - 1];
+  const value = app.review ? move?.win_white_after ?? app.review.data.eval_series[0] ?? 50 : app.game?.eval?.win_white ?? 50;
+  const label = app.review ? move?.eval_after || 'Starting position' : app.game?.eval?.text || 'Waiting for evaluation';
+  $('evalbar').hidden = !app.showEval;
+  $('evalbar').classList.toggle('flipped', orientation() === 'black');
+  $('eval-fill').style.height = Math.max(0, Math.min(100, value)) + '%';
+  $('evalbar').setAttribute('aria-label', 'Evaluation: ' + label + '. White win probability ' + Math.round(value) + '%');
+  $('evalbar').title = label;
+}
+function badge(rating) {
+  const entry = RATINGS[rating] || ['Unrated', '·'];
+  const node = el('span', 'badge r-' + rating, entry[1]);
+  node.title = entry[0]; node.setAttribute('aria-label', entry[0]); return node;
+}
+function moveLabel(move, ply) { return Math.ceil(ply / 2) + (ply % 2 ? '. ' : '… ') + move.san; }
+function moveCell(move, ply, strip = false) {
+  const canReview = Boolean(app.review) || app.game?.status !== 'active';
+  const node = canReview ? button(strip ? moveLabel(move, ply) : move.san, () => {
+    if (app.review) goTo(ply);
+    else startReview(app.game.game_id, ply);
+  }, 'mv') : el('span', 'mv', strip ? moveLabel(move, ply) : move.san);
+  node.dataset.ply = ply;
+  node.setAttribute('aria-label', moveLabel(move, ply) + (move.rating ? ', ' + (RATINGS[move.rating]?.[0] || move.rating) : ''));
+  if (move.rating) node.append(badge(move.rating));
+  return node;
+}
+function fillMoves(list, moves) {
+  const rows = [];
+  for (let index = 0; index < moves.length; index += 2) {
+    const row = el('li');
+    row.append(el('span', 'move-number', index / 2 + 1 + '.'), moveCell(moves[index], index + 1));
+    if (moves[index + 1]) row.append(moveCell(moves[index + 1], index + 2));
+    rows.push(row);
+  }
+  list.replaceChildren(...rows);
+}
+function revealCurrent(container, horizontal = false) {
+  const current = container.querySelector('[aria-current="step"]');
+  if (!current || !container.clientHeight) return;
+  const a = current.getBoundingClientRect(), b = container.getBoundingClientRect();
+  if (horizontal) {
+    if (a.left < b.left) container.scrollLeft += a.left - b.left;
+    else if (a.right > b.right) container.scrollLeft += a.right - b.right;
+  } else {
+    if (a.top < b.top) container.scrollTop += a.top - b.top;
+    else if (a.bottom > b.bottom) container.scrollTop += a.bottom - b.bottom;
+  }
+}
+function highlightMoves() {
+  const ply = app.review ? app.review.ply : app.game?.moves.length;
+  all('[data-ply]').forEach((node) => {
+    const selected = Number(node.dataset.ply) === ply;
+    node.classList.toggle('current', selected);
+    if (selected) node.setAttribute('aria-current', 'step'); else node.removeAttribute('aria-current');
+  });
+}
+function renderMoves() {
+  const moves = app.review ? app.review.data.moves : app.game.moves;
+  const key = JSON.stringify([app.review?.data.game_id || app.game.game_id, app.game.status, Boolean(app.review), moves]);
+  if (key !== app.movesKey) {
+    const scroll = $('moves').scrollTop;
+    const following = $('moves').scrollHeight - scroll - $('moves').clientHeight < 60;
+    fillMoves($('moves'), moves);
+    $('move-strip').replaceChildren(...moves.map((move, index) => moveCell(move, index + 1, true)));
+    if (!moves.length) $('move-strip').append(el('span', 'muted strip-empty', 'Make the first move'));
+    $('moves-empty').hidden = moves.length > 0;
+    highlightMoves();
+    if (following) requestAnimationFrame(() => revealCurrent($('moves')));
+    else $('moves').scrollTop = scroll;
+    requestAnimationFrame(() => revealCurrent($('move-strip'), true));
+    app.movesKey = key;
+  } else highlightMoves();
+}
+function chatVisible() { return phone.matches ? $('dlg-chat').open : app.tab === 'chat'; }
+function setUnread(value) {
+  app.unread = value;
+  all('.unread-dot').forEach((node) => { node.hidden = !value; });
+  $('nav-chat').setAttribute('aria-label', value ? 'Chat, unread message from Claude' : 'Chat');
+  $('tab-chat').setAttribute('aria-label', value ? 'Chat, unread message from Claude' : 'Chat');
+}
+let chatGame = null, chatIds = [], chatFollowing = true;
+$('chat').addEventListener('scroll', () => {
+  if (chatVisible()) chatFollowing = $('chat').scrollHeight - $('chat').scrollTop - $('chat').clientHeight < 64;
+}, { passive: true });
+function followChat() {
+  if (chatFollowing) requestAnimationFrame(() => { $('chat').scrollTop = $('chat').scrollHeight; });
+}
+function renderChat() {
+  const messages = app.game.chat || [];
+  const key = JSON.stringify([app.game.game_id, messages]);
+  if (key === app.chatKey) return;
+  const box = $('chat'), sameGame = chatGame === app.game.game_id;
+  const nearBottom = chatVisible() ? box.scrollHeight - box.scrollTop - box.clientHeight < 64 : chatFollowing;
+  const oldScroll = box.scrollTop;
+  const appendOnly = sameGame && messages.length >= chatIds.length && chatIds.every((id, index) => id === messages[index].id);
+  const fresh = sameGame ? messages.filter((message) => !chatIds.includes(message.id)) : [];
+  if (!appendOnly) box.replaceChildren();
+  for (const message of appendOnly ? messages.slice(chatIds.length) : messages) {
+    const bubble = el('p', 'bubble ' + (message.sender === 'human' ? 'human' : 'claude'));
+    bubble.append(el('span', 'bubble-name', message.sender === 'human' ? 'You' : 'Claude'), el('span', '', message.text));
+    box.append(bubble);
+  }
+  if (!sameGame) setUnread(false);
+  if (fresh.some((message) => message.sender === 'claude')) {
+    if (!chatVisible()) setUnread(true);
+    playSound('chat');
+  }
+  chatGame = app.game.game_id; chatIds = messages.map((message) => message.id); app.chatKey = key;
+  if (nearBottom || !sameGame || fresh.at(-1)?.sender === 'human') {
+    chatFollowing = true;
+    if (chatVisible()) followChat();
+  }
+  else box.scrollTop = oldScroll;
+}
+$('chat-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const input = $('chat-input'), value = input.value.trim();
+  if (value && send({ type: 'chat', text: value })) input.value = '';
+});
+$('chat-input').addEventListener('keydown', (event) => { if (event.isComposing && event.key === 'Enter') event.preventDefault(); });
 
 function renderClaude() {
   const claude = app.game?.claude;
-  const key = JSON.stringify(claude ?? null);
-  if (key === app.claudeKey) return;
-  app.claudeKey = key;
-  const box = $('claude-settings');
-  const oldInput = $('claude-code');
-  const focused = box.contains(document.activeElement) ? document.activeElement.id : null;
-  const selection = oldInput ? [oldInput.selectionStart, oldInput.selectionEnd, oldInput.selectionDirection] : null;
-  box.replaceChildren();
-  if (!claude?.available) {
-    box.append(el('p', 'muted', claude ? 'Claude Code isn’t installed on this server. Run Claude from Claude Code elsewhere to play.' : 'Waiting for Claude settings…'));
-    return;
+  const difficulty = app.game?.difficulty;
+  const elo = difficulty?.elo ?? null;
+  if (elo !== app.settingsElo && !$('settings-difficulty').contains(document.activeElement)) {
+    settingsDifficulty.set(elo); app.settingsElo = elo;
   }
-
-  const section = (title) => {
-    const node = el('section', 'claude-section');
-    const heading = el('h3', null, title);
-    heading.id = `claude-${title.toLowerCase()}-title`;
-    node.setAttribute('aria-labelledby', heading.id);
-    node.append(heading);
-    box.append(node);
-    return node;
-  };
-  const action = (id, text, type, cls) => {
-    const node = button(text, () => send({ type }), cls);
-    node.id = id;
-    return node;
-  };
-  const signedIn = claude.auth?.logged_in;
-  const login = claude.login || {};
-  const account = section('Account');
-  const accountStatus = el('p', 'muted', signedIn ? (claude.auth.email ? `Signed in as ${claude.auth.email}` : 'Signed in') : 'Not signed in');
-  accountStatus.setAttribute('role', 'status');
-  account.append(accountStatus);
-  if (login.busy) {
-    account.append(el('p', null, 'Open the sign-in page, sign in with your Claude account, then paste the code it shows.'));
-    if (login.url) {
-      const link = el('a', 'claude-login-link', 'Open the sign-in page');
-      link.id = 'claude-login-link';
-      link.href = login.url;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      account.append(link);
-    } else {
-      const preparing = el('p', 'muted', 'Preparing the sign-in link…');
-      preparing.setAttribute('role', 'status');
-      account.append(preparing);
-    }
-    const label = el('label', 'muted', 'Sign-in code');
-    label.htmlFor = 'claude-code';
-    const input = el('input');
-    input.id = 'claude-code';
-    input.type = 'text';
-    input.autocomplete = 'off';
-    input.autocapitalize = 'none';
-    input.spellcheck = false;
-    input.value = oldInput?.value || '';
-    input.disabled = !!login.verifying;
-    const submitCode = () => {
-      const code = input.value.trim();
-      if (code && !input.disabled) send({ type: 'claude_login_code', code });
-    };
-    const proceed = button('Continue', submitCode, 'primary');
-    proceed.id = 'claude-continue';
-    proceed.disabled = !!login.verifying;
-    input.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') {
-        event.preventDefault(); // Do not submit the enclosing dialog form.
-        if (!event.isComposing) submitCode();
-      }
-    });
-    const row = el('div', 'claude-code-row');
-    row.append(input, proceed);
-    account.append(label, row);
-    if (login.verifying) {
-      const checking = el('p', 'muted', 'Checking the code…');
-      checking.setAttribute('role', 'status');
-      account.append(checking);
-    }
-    account.append(action('claude-cancel', 'Cancel', 'claude_login_cancel', 'link'));
-  } else {
-    account.append(signedIn
-      ? action('claude-logout', 'Sign out', 'claude_logout')
-      : action('claude-login', 'Sign in to Claude', 'claude_login', 'primary'));
+  for (const id of ['settings-difficulty-slider', 'new-difficulty-slider']) {
+    $(id).min = String(difficulty?.min ?? 1320);
+    $(id).max = String(difficulty?.max ?? 3190);
   }
-
-  const modelSection = section('Model');
-  const select = el('select');
-  select.id = 'claude-model';
-  select.setAttribute('aria-labelledby', 'claude-model-title');
-  for (const model of claude.models || []) {
-    const option = el('option', null, model.name);
-    option.value = model.id;
-    select.append(option);
+  $('claude-unavailable').hidden = Boolean(claude?.available);
+  $('claude-controls').hidden = !claude?.available;
+  if (!claude?.available) return;
+  const signedIn = Boolean(claude.auth?.logged_in), login = claude.login || {};
+  text('account-status', signedIn ? 'Signed in' + (claude.auth.email ? ' as ' + claude.auth.email : '') : 'Connect your Claude account to play.');
+  $('account-actions').hidden = Boolean(login.busy);
+  $('claude-login').hidden = signedIn; $('claude-logout').hidden = !signedIn;
+  $('login-flow').hidden = !login.busy;
+  let loginUrl = null;
+  try { const url = new URL(login.url); if (['https:', 'http:'].includes(url.protocol)) loginUrl = url.href; } catch { /* Link not ready. */ }
+  $('login-link').hidden = !loginUrl; $('login-preparing').hidden = Boolean(loginUrl);
+  if (loginUrl) $('login-link').href = loginUrl;
+  $('login-checking').hidden = !login.verifying;
+  $('code-continue').disabled = Boolean(login.verifying);
+  // Keep code editable and preserve selection, even while server status changes.
+  const modelsKey = JSON.stringify(claude.models || []);
+  if (modelsKey !== app.modelsKey) {
+    $('claude-model').replaceChildren(...(claude.models || []).map((model) => {
+      const option = el('option', '', model.name); option.value = model.id; return option;
+    }));
+    app.modelsKey = modelsKey;
   }
-  select.value = claude.model;
-  select.addEventListener('change', () => send({ type: 'claude_model', model: select.value }));
-  modelSection.append(select);
-
-  const statusSection = section('Status');
-  const statuses = { stopped: 'Not running', starting: 'Starting…', running: 'Running', stopping: 'Stopping…', error: 'Stopped with an error' };
-  const status = el('p', null, statuses[claude.status] || 'Not running');
-  status.setAttribute('role', 'status');
-  statusSection.append(status);
-  if (claude.error) {
-    const error = el('p', 'claude-error', claude.error);
-    error.setAttribute('role', 'status');
-    statusSection.append(error);
-  }
+  if (document.activeElement !== $('claude-model')) $('claude-model').value = claude.model;
+  text('runner-status', ({ stopped: 'Stopped', starting: 'Starting…', running: 'Running', stopping: 'Stopping…', error: 'Error' })[claude.status] || 'Stopped');
+  text('runner-error', claude.error || ''); $('runner-error').hidden = !claude.error;
   const canStop = ['starting', 'running', 'stopping'].includes(claude.status);
-  const control = action('claude-control', canStop ? 'Stop Claude' : 'Start Claude', canStop ? 'claude_stop' : 'claude_start', 'primary');
-  control.disabled = claude.status === 'stopping' || (!canStop && !signedIn);
-  statusSection.append(control);
-
-  // State changes may arrive while the user is typing or using the keyboard.
-  const nextFocus = focused && $(focused);
-  if ($('dlg-claude').open && nextFocus && !nextFocus.disabled) {
-    nextFocus.focus({ preventScroll: true });
-    if (focused === 'claude-code' && selection) nextFocus.setSelectionRange(...selection);
-  }
+  text('claude-control', canStop ? 'Stop Claude' : 'Start Claude');
+  $('claude-control').disabled = claude.status === 'stopping' || (!canStop && !signedIn);
 }
-
-$('btn-claude').addEventListener('click', openClaude);
-
-function renderControls() {
-  const g = app.game;
-  const active = g.status === 'active' && !app.review && !app.loading;
-  $('btn-resign').disabled = !active;
-  $('btn-draw').disabled = !active || g.draw_offer === 'human';
-  $('btn-draw').title = g.draw_offer === 'human' ? 'Draw offered' : 'Offer a draw';
-  $('btn-eval').setAttribute('aria-pressed', String(app.showEval));
+for (const [id, type] of [['claude-login', 'claude_login'], ['claude-logout', 'claude_logout'], ['claude-cancel', 'claude_login_cancel']]) {
+  $(id).addEventListener('click', () => send({ type }));
 }
-
-function badge(rating) {
-  const [label, glyph] = RATINGS[rating];
-  const b = el('span', `badge r-${rating}`, glyph);
-  b.title = label;
-  b.setAttribute('aria-label', label);
-  return b;
-}
-
-function moveCell(move, ply) {
-  if (!app.review) return el('span', 'mv', move.san);
-  const cell = button(move.san, () => goTo(ply), 'mv');
-  cell.append(badge(move.rating));
-  cell.setAttribute('aria-label', `Move ${Math.ceil(ply / 2)}, ${ply % 2 ? 'White' : 'Black'}: ${move.san}, ${RATINGS[move.rating][0]}`);
-  if (ply === app.review.ply) {
-    cell.classList.add('current');
-    cell.setAttribute('aria-current', 'step');
-  }
-  return cell;
-}
-
-function renderMoves() {
-  const list = $('moves');
-  const restoreSheetFocus = $('dlg-moves').open && list.contains(document.activeElement);
-  const moves = app.review ? app.review.data.moves : app.loading ? [] : app.game.moves;
-  const rows = [];
-  for (let i = 0; i < moves.length; i += 2) {
-    const li = el('li');
-    li.append(el('span', 'no', `${i / 2 + 1}.`), moveCell(moves[i], i + 1));
-    if (moves[i + 1]) li.append(moveCell(moves[i + 1], i + 2));
-    rows.push(li);
-  }
-  list.replaceChildren(...rows);
-  if (restoreSheetFocus) (list.querySelector('.current') || $('btn-close-moves')).focus({ preventScroll: true });
-  scrollMoves();
-}
-
-function scrollMoves() {
-  const list = $('moves');
-  const current = list.querySelector('.current');
-  if (current) {
-    // Scroll only the move list; keep the board in place on narrow screens.
-    const row = current.parentElement;
-    const offset = row.getBoundingClientRect().top - list.getBoundingClientRect().top;
-    if (offset < 0) list.scrollTop += offset;
-    else if (offset + row.offsetHeight > list.clientHeight) list.scrollTop += offset + row.offsetHeight - list.clientHeight;
-  }
-  else list.scrollTop = list.scrollHeight;
-}
-
-function renderChat() {
-  const chat = app.game.chat;
-  const key = `${app.game.game_id}:${chat.length}`;
-  if (key === app.chatKey) return;
-  const box = $('chat');
-  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-  box.replaceChildren(...chat.map((m) => el('p', `msg ${m.sender}`, m.text)));
-  const last = chat[chat.length - 1];
-  const sameGame = seenChatGame === app.game.game_id;
-  if (!sameGame || chat.length < seenChatCount) setChatUnread(false);
-  if (sameGame && phoneViewport.matches && !$('dlg-chat').open && chat.slice(seenChatCount).some((m) => m.sender === 'claude')) {
-    setChatUnread(true);
-  }
-  seenChatGame = app.game.game_id;
-  seenChatCount = chat.length;
-  const preview = $('chat-preview');
-  preview.hidden = last?.sender !== 'claude';
-  preview.textContent = preview.hidden ? '' : last.text.replace(/\s+/g, ' ').trim();
-  preview.title = preview.textContent;
-  if (nearBottom || !app.chatKey || (last && last.sender === 'human')) box.scrollTop = box.scrollHeight;
-  app.chatKey = key;
-}
-
-function renderEval() {
-  const bar = $('evalbar');
-  let ev = null;
-  if (app.review) {
-    const m = app.review.data.moves[app.review.ply - 1];
-    ev = m ? { win_white: m.win_white_after, text: m.eval_after } : { win_white: app.review.data.eval_series[0], text: '' };
-  } else if (app.game.status === 'active' && !app.loading) {
-    ev = app.game.eval;
-  }
-  bar.hidden = !app.showEval || !ev;
-  if (bar.hidden) return;
-  bar.classList.toggle('flipped', orientation() === 'black');
-  bar.querySelector('.evalbar-fill').style.height = `${ev.win_white}%`;
-  bar.title = ev.text ? `Evaluation ${ev.text}` : 'Evaluation';
-}
-
-// ---------------- moving ----------------
-function onUserMove(orig, dest) {
-  const piece = ground.state.pieces.get(dest);
-  if (piece && piece.role === 'pawn' && (dest[1] === '8' || dest[1] === '1')) {
-    askPromotion(orig, dest, app.game.human_color);
-    return;
-  }
-  send({ type: 'move', move: orig + dest });
-}
-
-function askPromotion(orig, dest, color) {
-  const box = $('promo');
-  const glyphs = color === 'white' ? { q: '♕', r: '♖', b: '♗', n: '♘' } : { q: '♛', r: '♜', b: '♝', n: '♞' };
-  const choose = (piece) => {
-    box.hidden = true;
-    $('board').focus({ preventScroll: true });
-    send({ type: 'move', move: orig + dest + piece });
-  };
-  box.replaceChildren(
-    ...Object.entries(glyphs).map(([piece, glyph]) => {
-      const choice = button(glyph, () => choose(piece));
-      const name = { q: 'Queen', r: 'Rook', b: 'Bishop', n: 'Knight' }[piece];
-      choice.title = name;
-      choice.setAttribute('aria-label', `Promote to ${name.toLowerCase()}`);
-      return choice;
-    }),
-    button('×', () => { box.hidden = true; render(); $('board').focus({ preventScroll: true }); }),
-  );
-  box.lastElementChild.title = 'Cancel promotion';
-  box.lastElementChild.setAttribute('aria-label', 'Cancel promotion');
-  box.hidden = false;
-  box.querySelector('button').focus();
-}
-
-// Keep keyboard focus in the board's promotion picker until a choice is made.
-$('promo').addEventListener('keydown', (event) => {
-  const choices = [...event.currentTarget.querySelectorAll('button')];
-  if (event.key === 'Escape') {
-    event.preventDefault();
-    choices.at(-1).click();
-  } else if (event.key === 'Tab') {
-    event.preventDefault();
-    const next = choices.indexOf(document.activeElement) + (event.shiftKey ? -1 : 1);
-    choices[(next + choices.length) % choices.length].focus();
-  }
-});
-
-// ---------------- controls ----------------
-function confirmBox(text, okLabel) {
-  const dlg = $('dlg-confirm');
-  $('confirm-text').textContent = text;
-  $('confirm-ok').textContent = okLabel;
-  $('confirm-ok').setAttribute('aria-label', okLabel);
-  dlg.returnValue = '';
-  dlg.showModal();
-  return new Promise((resolve) => dlg.addEventListener('close', () => resolve(dlg.returnValue === 'ok'), { once: true }));
-}
-
-$('btn-new').addEventListener('click', async () => {
-  const g = app.game;
-  if (!g) return;
-  if (g.status === 'active' && g.moves.length >= 2) {
-    if (!(await confirmBox('Resign this game and start a new one?', 'Resign'))) return;
-    send({ type: 'resign' });
-  }
-  const dlg = $('dlg-new');
-  dlg.returnValue = '';
-  dlg.showModal();
-  dlg.addEventListener('close', () => {
-    if (['white', 'black', 'random'].includes(dlg.returnValue)) {
-      closeReview();
-      send({ type: 'new_game', human_color: dlg.returnValue });
-    }
-  }, { once: true });
-});
-$('btn-resign').addEventListener('click', async () => {
-  if (await confirmBox('Resign this game?', 'Resign')) send({ type: 'resign' });
-});
-$('btn-draw').addEventListener('click', () => send({ type: 'offer_draw' }));
-$('btn-flip').addEventListener('click', () => { app.flipped = !app.flipped; render(); });
-$('btn-eval').addEventListener('click', () => {
-  app.showEval = !app.showEval;
-  saved.set('chess-eval', app.showEval ? '1' : '0');
-  render();
-});
-$('btn-games').addEventListener('click', () => {
-  $('games-list').replaceChildren(el('li', 'muted', 'Loading…'));
-  $('dlg-games').returnValue = '';
-  $('dlg-games').showModal();
-  send({ type: 'list_games' });
-});
-$('dlg-games').addEventListener('close', () => {
-  const id = $('dlg-games').returnValue;
-  if (id && id !== 'close') startReview(id);
-});
-$('chat-form').addEventListener('submit', (event) => {
+$('claude-control').addEventListener('click', () => send({ type: ['starting', 'running', 'stopping'].includes(app.game?.claude?.status) ? 'claude_stop' : 'claude_start' }));
+$('claude-model').addEventListener('change', (event) => send({ type: 'claude_model', model: event.target.value }));
+$('code-form').addEventListener('submit', (event) => {
   event.preventDefault();
-  const input = $('chat-input');
-  const text = input.value.trim();
-  if (!text) return;
-  send({ type: 'chat', text });
-  input.value = '';
+  const code = $('claude-code').value.trim();
+  if (code && !app.game?.claude?.login?.verifying) send({ type: 'claude_login_code', code });
+});
+function difficultyControl(id, onChange) {
+  const box = $(id), presets = el('div', 'presets'), output = el('output', 'difficulty-value');
+  let elo = 1500;
+  const slider = el('input');
+  slider.type = 'range'; slider.min = '1320'; slider.max = '3190'; slider.step = '10'; slider.value = '1500';
+  slider.id = id + '-slider';
+  slider.setAttribute('aria-label', 'Target difficulty rating');
+  const label = el('label', '', 'Target rating'); label.htmlFor = slider.id;
+  const entries = PRESETS.map(([name, value]) => {
+    const node = button(name, () => { set(value); onChange?.(value); });
+    node.append(el('small', '', value == null ? 'Own game' : String(value)));
+    node.setAttribute('aria-pressed', 'false'); presets.append(node); return [node, value];
+  });
+  function set(value) {
+    elo = value;
+    output.textContent = value == null ? 'Claude plays its own game' : String(value);
+    if (value != null) slider.value = value;
+    slider.setAttribute('aria-valuetext', value == null ? 'Claude — move the slider to set a target rating' : String(value));
+    for (const [node, target] of entries) node.setAttribute('aria-pressed', String(target === value));
+  }
+  slider.addEventListener('input', () => set(Number(slider.value)));
+  slider.addEventListener('change', () => onChange?.(elo));
+  box.append(presets, label, output, slider);
+  set(1500);
+  return { set, get: () => elo };
+}
+const newDifficulty = difficultyControl('new-difficulty');
+const settingsDifficulty = difficultyControl('settings-difficulty', (elo) => {
+  if (send({ type: 'set_difficulty', elo })) { app.settingsElo = elo; toast('Difficulty requested for the next game.'); }
+});
+$('start-game').addEventListener('click', async () => {
+  const selectedGame = app.game?.game_id;
+  const color = document.querySelector('input[name="side"]:checked').value;
+  const elo = newDifficulty.get();
+  if (app.game?.status === 'active' && app.game.moves.length >= 2) {
+    if (!await confirmBox('Resign this game and start a new one?', 'Resign & play')) return;
+    if (app.game?.game_id !== selectedGame) { toast('The game changed. Please try again.'); return; }
+    if (app.game.status === 'active' && !send({ type: 'resign' })) return;
+  }
+  if (send({ type: 'new_game', human_color: color, elo })) { $('dlg-new').close(); closeReview(); }
 });
 
-function renderGames(games) {
-  const list = $('games-list');
-  if (!games.length) {
-    list.replaceChildren(el('li', 'muted', 'No finished games yet.'));
+// Only authoritative snapshots acknowledge moves; don't replay them after reconnecting.
+function clearPending() {
+  app.pendingMove = null; clearTimeout(pendingTimer);
+}
+function submitMove(uci) {
+  if (!send({ type: 'move', move: uci })) { app.boardKey = ''; renderBoard(); return; }
+  app.pendingMove = { fen: app.game.fen };
+  ground.set({ movable: { color: undefined } });
+  pendingTimer = setTimeout(() => { clearPending(); app.boardKey = ''; renderBoard(); }, 5000);
+}
+let promotion = null;
+function onUserMove(from, to) {
+  if (!app.game || app.review || app.loading || app.pendingMove || !app.game.dests?.[from]?.includes(to)) {
+    app.boardKey = ''; renderBoard(); return;
+  }
+  const piece = ground.state.pieces.get(to);
+  if (piece?.role === 'pawn' && ['1', '8'].includes(to[1])) {
+    promotion = { from, to, gameId: app.game.game_id, fen: app.game.fen };
+    const white = app.game.human_color === 'white';
+    $('promotion-choices').replaceChildren(...[['q', 'Queen', white ? '♕' : '♛'], ['r', 'Rook', white ? '♖' : '♜'], ['b', 'Bishop', white ? '♗' : '♝'], ['n', 'Knight', white ? '♘' : '♞']].map(([suffix, name, glyph]) => {
+      const node = button(glyph, () => { submitMove(from + to + suffix); promotion = null; $('dlg-promotion').close(); });
+      node.setAttribute('aria-label', 'Promote to ' + name); return node;
+    }));
+    openDialog('dlg-promotion');
+  } else submitMove(from + to);
+}
+$('dlg-promotion').addEventListener('close', () => {
+  if (promotion) { promotion = null; app.boardKey = ''; renderBoard(); }
+  $('board').focus({ preventScroll: true });
+});
+
+function selectTab(tab) {
+  app.tab = tab;
+  if (tab === 'review') showReview();
+  if (tab === 'chat') setUnread(false);
+  renderView();
+  if (tab === 'chat') followChat();
+}
+function selectPage(page) {
+  if (page === 'chat') {
+    openDialog('dlg-chat'); setUnread(false);
+    renderView();
+    followChat();
     return;
   }
-  list.replaceChildren(...games.map((g) => {
-    const outcome = g.winner == null ? 'Draw' : g.winner === g.human_color ? 'Won' : 'Lost';
-    const when = new Date((g.ended_at || g.started_at) * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    const row = el('button', 'game-row');
-    row.value = g.game_id;
-    row.title = `${outcome}: ${g.opening || `${g.moves} moves`} — ${when}`;
-    row.setAttribute('aria-label', `Review game. ${row.title}`);
-    row.append(el('span', `outcome ${outcome.toLowerCase()}`, outcome), el('span', 'opening', g.opening || `${g.moves} moves`), el('span', 'date', when));
-    const li = el('li');
-    li.append(row);
-    return li;
-  }));
+  if (page === 'more') { openDialog('dlg-more'); renderView(); return; }
+  app.page = page;
+  if (page === 'review') showReview();
+  renderView();
+  requestAnimationFrame(() => { sizeBoard(); ground.redrawAll(); });
 }
-
-// ---------------- review ----------------
-function startReview(gameId) {
-  app.review = null;
+function renderView() {
+  $('board-column').hidden = phone.matches && app.page === 'review';
+  $('mobile-report').hidden = !phone.matches || app.page !== 'review';
+  $('moves-pane').hidden = app.tab !== 'moves';
+  $('chat-pane').hidden = app.tab !== 'chat';
+  $('report').hidden = phone.matches ? app.page !== 'review' : app.tab !== 'review';
+  $('report-home').hidden = phone.matches || app.tab !== 'review';
+  all('[data-tab]').forEach((node) => {
+    node.setAttribute('aria-selected', String(node.dataset.tab === app.tab));
+    node.tabIndex = node.dataset.tab === app.tab ? 0 : -1;
+  });
+  const activePage = $('dlg-chat').open ? 'chat' : $('dlg-more').open ? 'more' : app.page;
+  all('[data-page]').forEach((node) => {
+    if (node.dataset.page === activePage) node.setAttribute('aria-current', 'page'); else node.removeAttribute('aria-current');
+  });
+}
+all('[data-tab]').forEach((node) => node.addEventListener('click', () => selectTab(node.dataset.tab)));
+all('[data-page]').forEach((node) => node.addEventListener('click', () => selectPage(node.dataset.page)));
+document.querySelector('.panel-tabs').addEventListener('keydown', (event) => {
+  const tabs = all('[data-tab]'), index = tabs.indexOf(document.activeElement);
+  if (index < 0 || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault(); event.stopPropagation();
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+  tabs[next].focus(); selectTab(tabs[next].dataset.tab);
+});
+const actions = {
+  more: () => openDialog('dlg-more'),
+  new: () => { newDifficulty.set(app.game?.difficulty?.elo ?? null); openDialog('dlg-new'); },
+  draw: () => send({ type: 'offer_draw' }),
+  resign: async () => {
+    const gameId = app.game?.game_id;
+    if (await confirmBox('Resign this game?', 'Resign') && app.game?.game_id === gameId && app.game.status === 'active') send({ type: 'resign' });
+  },
+  flip: () => { app.flipped = !app.flipped; render(); },
+  eval: () => { app.showEval = !app.showEval; saved.set('chess-eval', app.showEval ? '1' : '0'); render(); },
+  sound: () => { app.sound = !app.sound; saved.set('chess-sound', app.sound ? '1' : '0'); renderControls(); if (app.sound) playSound('move'); },
+  games: () => { openDialog('dlg-games'); requestGames(); },
+  'close-review': closeReview,
+  'view-board': () => selectPage('play'),
+};
+all('[data-action]').forEach((node) => node.addEventListener('click', () => actions[node.dataset.action]()));
+function requestGames() {
+  if (!app.games) {
+    for (const id of ['games-list', 'review-games']) $(id).replaceChildren(el('li', 'empty', 'Loading past games…'));
+  }
+  send({ type: 'list_games' });
+}
+function renderGames() {
+  for (const id of ['games-list', 'review-games']) {
+    const list = $(id), scroll = list.scrollTop;
+    list.replaceChildren(...(app.games || []).map((game) => {
+      const outcome = game.winner == null ? 'Draw' : game.winner === game.human_color ? 'Won' : 'Lost';
+      const date = new Date((game.ended_at || game.started_at) * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      const row = button('', () => { all('dialog[open]').forEach((dialog) => dialog.close()); startReview(game.game_id); }, 'game-row');
+      const detail = el('span', 'game-description');
+      detail.append(el('strong', '', game.opening || Math.ceil(game.moves / 2) + ' moves'), el('small', '', (game.elo == null ? 'Claude' : game.elo) + ' · ' + date));
+      row.append(el('span', 'outcome ' + outcome.toLowerCase(), outcome), detail, el('span', 'muted', game.reviewed ? '✓' : '›'));
+      row.setAttribute('aria-label', 'Review game: ' + outcome + ', ' + detail.textContent);
+      const item = el('li'); item.append(row); return item;
+    }));
+    if (!app.games?.length) list.append(el('li', 'empty', 'No finished games yet.'));
+    list.scrollTop = scroll;
+  }
+}
+function showReview() {
+  if (!app.review && !app.loading && app.game?.status !== 'active' && app.game) startReview(app.game.game_id);
+  else if (!app.review && !app.loading) requestGames();
+  renderReport();
+}
+function startReview(gameId, ply = null) {
+  if (!send({ type: 'open_review', game_id: gameId })) return;
+  ground.cancelPremove(); clearPending();
+  app.review = null; app.requestId = gameId; app.pendingPly = ply;
   app.loading = { game_id: gameId, done: 0, total: 0 };
-  document.body.classList.add('reviewing');
-  send({ type: 'open_review', game_id: gameId });
+  app.tab = 'review'; app.page = 'review'; app.boardKey = '';
+  $('report').scrollTop = 0;
   render();
-  renderReview();
 }
-
-function openReview(data) {
-  app.loading = null;
-  app.review = { data, ply: data.moves.length };
-  document.body.classList.add('reviewing');
-  render();
-  renderReview();
-}
-
 function closeReview() {
-  app.review = null;
-  app.loading = null;
-  document.body.classList.remove('reviewing');
+  app.review = null; app.requestId = null; app.loading = null; app.pendingPly = null;
+  app.tab = 'moves'; app.page = 'play'; app.boardKey = ''; app.movesKey = '';
   render();
-  renderReview();
 }
-$('btn-close-review').addEventListener('click', closeReview);
-$('review-first').addEventListener('click', () => goTo(0));
-$('review-prev').addEventListener('click', () => goTo(app.review.ply - 1));
-$('review-next').addEventListener('click', () => goTo(app.review.ply + 1));
-$('review-last').addEventListener('click', () => goTo(app.review.data.moves.length));
-
+function buildReport() {
+  const { data } = app.review;
+  const human = data[humanColor()], claude = data[other(humanColor())];
+  $('accuracy').replaceChildren(...[[human, 'You'], [claude, 'Claude']].map(([side, name]) => {
+    const card = el('div', 'accuracy-card'), ring = el('div', 'accuracy-ring');
+    ring.style.setProperty('--accuracy', Math.max(0, Math.min(100, side.accuracy ?? 0)) + '%');
+    ring.append(el('strong', '', side.accuracy == null ? '—' : side.accuracy.toFixed(1)));
+    card.append(ring, el('strong', '', name), el('span', 'muted', 'Accuracy')); return card;
+  }));
+  const head = el('thead'), heading = el('tr');
+  for (const label of ['You', 'Move rating', 'Claude']) { const cell = el('th', '', label); cell.scope = 'col'; heading.append(cell); }
+  head.append(heading);
+  const body = el('tbody');
+  for (const [rating, [name]] of Object.entries(RATINGS)) {
+    const row = el('tr'), label = el('th'); label.scope = 'row';
+    label.append(badge(rating), el('span', '', name));
+    row.append(el('td', '', human.counts?.[rating] || 0), label, el('td', '', claude.counts?.[rating] || 0)); body.append(row);
+  }
+  $('counts').replaceChildren(el('caption', '', 'Move ratings'), head, body);
+  fillMoves($('review-moves'), data.moves);
+  renderGraph();
+}
+function renderReport() {
+  $('review-empty').hidden = Boolean(app.review || app.loading);
+  $('review-progress').hidden = !app.loading;
+  $('report-data').hidden = !app.review;
+  $('board-review').hidden = !app.review;
+  text('review-opening', app.review?.data.opening || (app.review ? 'Every move is a chance to learn.' : 'Learn from every game.'));
+  if (app.loading) {
+    const { done, total } = app.loading;
+    $('progress').value = total ? done / total * 100 : 0;
+    text('progress-text', total ? 'Analysing position ' + done + ' of ' + total + '…' : 'Starting analysis…');
+  }
+  if (!app.review) return;
+  const { data, ply } = app.review;
+  all('.review-position').forEach((node) => { node.textContent = ply + ' / ' + data.moves.length; });
+  all('[data-step]').forEach((node) => { node.disabled = ['first', 'prev'].includes(node.dataset.step) ? ply === 0 : ply === data.moves.length; });
+}
+function renderGraph() {
+  const { data, ply } = app.review, n = Math.max(1, data.eval_series.length - 1);
+  const x = (index) => index / n * 400, y = (value) => 100 - Math.max(0, Math.min(100, value ?? 50)) * .9;
+  const points = data.eval_series.map((value, index) => x(index) + ',' + y(value));
+  const nodes = [
+    svg('path', { d: 'M0,110 L' + points.join(' L') + ' L400,110 Z', class: 'graph-area' }),
+    svg('line', { x1: 0, x2: 400, y1: 55, y2: 55, class: 'graph-mid' }),
+  ];
+  for (const move of data.moves) {
+    if (!['brilliant', 'great', 'inaccuracy', 'mistake', 'miss', 'blunder'].includes(move.rating)) continue;
+    const group = svg('g', { class: 'graph-mark r-' + move.rating });
+    group.append(svg('circle', { cx: x(move.ply), cy: y(move.win_white_after), r: 6 }));
+    const glyph = svg('text', { x: x(move.ply), y: y(move.win_white_after) + 2.5, 'text-anchor': 'middle' });
+    glyph.textContent = RATINGS[move.rating][1]; group.append(glyph);
+    const title = svg('title', {}); title.textContent = moveLabel(move, move.ply) + ' — ' + RATINGS[move.rating][0]; group.append(title); nodes.push(group);
+  }
+  nodes.push(svg('line', { id: 'graph-cursor', x1: x(ply), x2: x(ply), y1: 0, y2: 110, class: 'graph-cursor' }));
+  $('graph').replaceChildren(...nodes);
+  $('graph').setAttribute('aria-valuemax', data.moves.length);
+  updateReviewPosition();
+}
+function updateReviewPosition() {
+  if (!app.review) return;
+  const { data, ply } = app.review, move = data.moves[ply - 1];
+  const x = ply / Math.max(1, data.eval_series.length - 1) * 400;
+  $('graph-cursor')?.setAttribute('x1', x); $('graph-cursor')?.setAttribute('x2', x);
+  $('graph').setAttribute('aria-valuenow', ply); $('graph').setAttribute('aria-valuetext', 'Position ' + ply + ' of ' + data.moves.length);
+  const detail = $('move-detail');
+  if (move) {
+    const line = el('div', 'move-verdict');
+    line.append(badge(move.rating), el('strong', '', moveLabel(move, ply)), el('span', '', RATINGS[move.rating]?.[0] || 'Unrated'), el('strong', 'move-eval', move.eval_after));
+    detail.replaceChildren(line);
+    if (move.best_line && move.best_uci !== move.uci) detail.append(el('p', 'best-line', 'Best line: ' + move.best_line));
+    text('board-review-label', moveLabel(move, ply) + ' · ' + (RATINGS[move.rating]?.[0] || 'Unrated') + ' · ' + move.eval_after);
+  } else {
+    detail.replaceChildren(el('p', 'muted', 'Starting position. Step through the game to find your turning points.'));
+    text('board-review-label', 'Starting position');
+  }
+  highlightMoves();
+}
 function goTo(ply) {
   if (!app.review) return;
   app.review.ply = Math.max(0, Math.min(app.review.data.moves.length, ply));
-  render();
-  renderReview();
+  renderBoard(); renderEval(); renderReport(); updateReviewPosition();
+  revealCurrent($('moves')); revealCurrent($('move-strip'), true);
 }
-
-function renderReviewBoard() {
-  const { data, ply } = app.review;
-  const m = data.moves[ply - 1];
-  const shapes = [];
-  if (m && m.best_uci && m.best_uci !== m.uci && !NO_ARROW.has(m.rating)) {
-    shapes.push({ orig: m.best_uci.slice(0, 2), dest: m.best_uci.slice(2, 4), brush: 'green' });
-  }
-  const fen = m ? m.fen : START_FEN;
-  ground.set({
-    fen,
-    orientation: orientation(),
-    turnColor: fen.split(' ')[1] === 'w' ? 'white' : 'black',
-    lastMove: m ? [m.uci.slice(0, 2), m.uci.slice(2, 4)] : null,
-    check: Boolean(m && /[+#]$/.test(m.san)),
-    movable: { color: undefined, dests: new Map() },
-    drawable: { autoShapes: shapes },
-  });
-}
-
-function renderReview() {
-  const on = Boolean(app.review || app.loading);
-  $('review').hidden = !on;
-  $('btn-close-review').hidden = !on;
-  $('panel-title').textContent = on ? 'Game review' : 'Claude';
-  $('moves-title').textContent = on ? 'Game review' : 'Moves';
-  $('best-line').hidden = !app.review;
-  $('review-nav').hidden = !app.review;
-  if (app.review) {
-    const { ply, data } = app.review;
-    $('review-position').textContent = `${ply} / ${data.moves.length}`;
-    for (const id of ['review-first', 'review-prev']) $(id).disabled = ply === 0;
-    for (const id of ['review-next', 'review-last']) $(id).disabled = ply === data.moves.length;
-  }
-  const progress = $('review-progress');
-  progress.hidden = !app.loading;
-  if (app.loading) {
-    const { done, total } = app.loading;
-    progress.querySelector('span').style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
-    progress.querySelector('p').textContent = total ? `Analysing position ${done} of ${total}…` : 'Starting analysis…';
-  }
-  for (const id of ['accuracy', 'graph', 'counts']) $(id).hidden = !app.review;
+all('[data-step]').forEach((node) => node.addEventListener('click', () => {
   if (!app.review) return;
-  const { data, ply } = app.review;
-  renderAccuracy(data);
-  renderCounts(data);
-  renderGraph(data, ply);
-  renderBestLine(data, ply);
-}
-
-function sides(data) {
-  // Reviews name the human 'Human' (older cached ones say 'You').
-  const human = data.white.name === 'Human' || data.white.name === 'You' ? data.white : data.black;
-  return [human, human === data.white ? data.black : data.white];
-}
-
-function renderAccuracy(data) {
-  const card = (p) => {
-    const c = el('div', 'acc-card');
-    c.append(el('span', 'acc-name', p.name === 'Claude' ? 'Claude' : 'You'), el('strong', null, p.accuracy == null ? '–' : p.accuracy.toFixed(1)), el('span', 'acc-label', 'accuracy'));
-    return c;
-  };
-  $('accuracy').replaceChildren(...sides(data).map(card));
-}
-
-function renderCounts(data) {
-  const [human, claude] = sides(data);
-  const rows = Object.keys(RATINGS)
-    .filter((r) => human.counts[r] || claude.counts[r])
-    .map((r) => {
-      const tr = el('tr');
-      const name = el('th');
-      name.append(badge(r), el('span', null, RATINGS[r][0]));
-      tr.append(el('td', 'n', String(human.counts[r] || 0)), name, el('td', 'n', String(claude.counts[r] || 0)));
-      return tr;
-    });
-  $('counts').replaceChildren(...rows);
-}
-
-function renderGraph(data, ply) {
-  const W = 300;
-  const H = 60;
-  const n = data.eval_series.length - 1;
-  const x = (i) => (n ? (i / n) * W : 0);
-  const y = (w) => H - (w / 100) * H;
-  const points = data.eval_series.map((w, i) => `${x(i).toFixed(1)},${y(w).toFixed(1)}`);
-  const nodes = [
-    svg('path', { d: `M0,${H} L${points.join(' L')} L${W},${H} Z`, class: 'g-white' }),
-    svg('line', { x1: 0, x2: W, y1: H / 2, y2: H / 2, class: 'g-mid' }),
-    svg('line', { x1: x(ply), x2: x(ply), y1: 0, y2: H, class: 'g-cursor' }),
-  ];
-  for (const m of data.moves) {
-    if (!KEY_RATINGS.has(m.rating)) continue;
-    const cx = x(m.ply);
-    const cy = y(m.win_white_after);
-    nodes.push(svg('line', { x1: cx, x2: cx, y1: cy, y2: cy, class: `g-dot r-${m.rating}` }));
-  }
-  $('graph').replaceChildren(...nodes);
-  $('graph').setAttribute('aria-valuemax', String(n));
-  $('graph').setAttribute('aria-valuenow', String(ply));
-  $('graph').setAttribute('aria-valuetext', `Position ${ply} of ${n}`);
-}
-
+  const { ply, data } = app.review;
+  goTo(({ first: 0, prev: ply - 1, next: ply + 1, last: data.moves.length })[node.dataset.step]);
+}));
 $('graph').addEventListener('click', (event) => {
   if (!app.review) return;
-  const rect = event.currentTarget.getBoundingClientRect();
-  goTo(Math.round(((event.clientX - rect.left) / rect.width) * app.review.data.moves.length));
+  const rect = $('graph').getBoundingClientRect();
+  goTo(Math.round((event.clientX - rect.left) / rect.width * app.review.data.moves.length));
 });
-
-function renderBestLine(data, ply) {
-  const box = $('best-line');
-  const m = data.moves[ply - 1];
-  if (!m) {
-    box.replaceChildren(el('span', 'muted', 'Start position. Use ← → to step through the game.'));
-    return;
-  }
-  const label = `${Math.ceil(m.ply / 2)}${m.color === 'white' ? '.' : '…'} ${m.san}`;
-  const parts = [badge(m.rating), el('strong', null, label), el('span', null, RATINGS[m.rating][0]), el('span', 'eval', m.eval_after)];
-  if (m.best_line && m.best_uci !== m.uci && !NO_ARROW.has(m.rating)) parts.push(el('span', 'best', `Best: ${m.best_line}`));
-  box.replaceChildren(...parts);
-}
-
 document.addEventListener('keydown', (event) => {
-  const dialog = event.target.closest('dialog') || ($('dlg-moves').open ? $('dlg-moves') : null);
-  if (!app.review || event.target.closest('input, textarea') || (dialog && dialog.id !== 'dlg-moves')) return;
-  if (dialog && event.key === 'Escape') return; // Native Escape closes the sheet, not the review.
-  if (event.key === 'ArrowLeft') goTo(app.review.ply - 1);
-  else if (event.key === 'ArrowRight') goTo(app.review.ply + 1);
-  else if (event.key === 'Home') goTo(0);
-  else if (event.key === 'End') goTo(app.review.data.moves.length);
+  if (!app.review || event.target.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('dialog[open]')) return;
+  const { ply, data } = app.review;
+  const target = ({ ArrowLeft: ply - 1, ArrowRight: ply + 1, Home: 0, End: data.moves.length })[event.key];
+  if (target != null) { event.preventDefault(); goTo(target); }
   else if (event.key === 'Escape') closeReview();
-  else return;
-  event.preventDefault();
 });
-
-let touchX = null;
-$('board').addEventListener('touchstart', (event) => { touchX = event.touches[0].clientX; }, { passive: true });
+let touch = null;
+$('board').addEventListener('touchstart', (event) => {
+  touch = event.touches.length === 1 ? [event.touches[0].clientX, event.touches[0].clientY] : null;
+}, { passive: true });
 $('board').addEventListener('touchend', (event) => {
-  if (!app.review || touchX == null) return;
-  const dx = event.changedTouches[0].clientX - touchX;
-  touchX = null;
-  if (Math.abs(dx) > 40) goTo(app.review.ply + (dx < 0 ? 1 : -1));
-});
+  if (!app.review || !touch) return;
+  const dx = event.changedTouches[0].clientX - touch[0], dy = event.changedTouches[0].clientY - touch[1]; touch = null;
+  if (Math.abs(dx) > 35 && Math.abs(dx) > Math.abs(dy)) goTo(app.review.ply + (dx < 0 ? 1 : -1));
+}, { passive: true });
+$('board').addEventListener('touchcancel', () => { touch = null; }, { passive: true });
 
-// ---------------- toast ----------------
-let toastTimer;
-function toast(text) {
-  const t = $('toast');
-  t.textContent = text;
-  t.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 3500);
+let audioContext = null, interacted = false;
+function unlockAudio() {
+  interacted = true;
+  if (!app.sound) return;
+  try {
+    const Context = window.AudioContext || window.webkitAudioContext;
+    if (!audioContext && Context) audioContext = new Context();
+    audioContext?.resume().catch(() => {});
+  } catch { /* Audio is optional. */ }
 }
-
-placeForViewport();
-connect();
+document.addEventListener('pointerdown', unlockAudio, { passive: true });
+document.addEventListener('keydown', unlockAudio);
+function playSound(kind) {
+  if (!interacted || !app.sound || !audioContext || audioContext.state !== 'running') return;
+  const notes = {
+    move: [[460, 0, .07]], capture: [[250, 0, .065], [175, .04, .08]],
+    check: [[660, 0, .07], [880, .08, .09]],
+    end: [[523, 0, .10], [659, .09, .10], [784, .18, .14]],
+    chat: [[740, 0, .055], [988, .06, .07]],
+  }[kind] || [];
+  for (const [frequency, delay, duration] of notes) {
+    const oscillator = audioContext.createOscillator(), gain = audioContext.createGain();
+    const start = audioContext.currentTime + delay;
+    oscillator.type = kind === 'capture' ? 'triangle' : 'sine';
+    oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(0, start); gain.gain.linearRampToValueAtTime(.055, start + .008); gain.gain.exponentialRampToValueAtTime(.001, start + duration);
+    oscillator.connect(gain); gain.connect(audioContext.destination);
+    oscillator.start(start); oscillator.stop(start + duration + .01);
+    oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
+  }
+}
+function toast(message) {
+  const dialog = all('dialog[open]').at(-1);
+  (dialog || document.body).append($('toast'));
+  text('toast', message); $('toast').hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { $('toast').hidden = true; }, 4000);
+}
+sizeSheets(); placeForViewport(); renderControls(); connect();

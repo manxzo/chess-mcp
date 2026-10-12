@@ -1,160 +1,215 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <title>Chess with Claude</title>
-  <meta name="theme-color" content="#f5f6f4" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#181d1a" media="(prefers-color-scheme: dark)">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>♞</text></svg>">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.base.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.cburnett.css">
-  <link rel="stylesheet" href="/static/style.css">
-  <script type="module" src="/static/app.js"></script>
-</head>
-<body>
-  <main class="app" id="app" hidden>
-    <section class="board-col" aria-label="Chess board and game controls">
-      <div class="board-stack">
-        <div class="player" id="player-top"></div>
-        <div class="board-area">
-          <div class="evalbar" id="evalbar" hidden><div class="evalbar-fill"></div></div>
-          <div class="board-wrap">
-            <div id="board" tabindex="-1" aria-label="Chess board"></div>
-            <div class="promo" id="promo" role="dialog" aria-label="Choose a promotion piece" hidden></div>
-          </div>
-        </div>
-        <div class="player" id="player-bottom"></div>
-        <p class="best-line" id="best-line" hidden></p>
-        <div id="mobile-status" class="mobile-only">
-          <div id="mobile-status-row"></div>
-          <button id="chat-preview" type="button" aria-label="Open conversation with Claude" aria-haspopup="dialog" aria-controls="dlg-chat" hidden></button>
-        </div>
-        <nav class="controls" aria-label="Game controls">
-          <button id="btn-new" type="button" title="New game" aria-label="New game">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
-          </button>
-          <button id="btn-draw" type="button" title="Offer a draw" aria-label="Offer a draw">½</button>
-          <button id="btn-resign" type="button" title="Resign" aria-label="Resign">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg>
-          </button>
-          <span class="spacer"></span>
-          <button id="btn-flip" type="button" title="Flip board" aria-label="Flip board">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 20V4M3 8l4-4 4 4M17 4v16M13 16l4 4 4-4"/></svg>
-          </button>
-          <button id="btn-eval" type="button" title="Evaluation bar" aria-label="Evaluation bar" aria-pressed="false">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v18M6 10v11M18 14v7"/></svg>
-          </button>
-          <button id="btn-games" type="button" title="Past games" aria-label="Past games">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 2"/></svg>
-          </button>
-          <button id="btn-moves" class="mobile-only" type="button" title="Moves" aria-label="Moves" aria-haspopup="dialog" aria-controls="dlg-moves">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13M3 5h.01M3 12h.01M3 19h.01"/></svg>
-          </button>
-          <button id="btn-chat" class="mobile-only" type="button" title="Chat" aria-label="Chat" aria-haspopup="dialog" aria-controls="dlg-chat">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11a8 8 0 0 1-8 8H7l-4 3V11a9 9 0 0 1 18 0Z"/></svg>
-            <span id="chat-unread" class="unread-dot" aria-hidden="true" hidden></span>
-          </button>
-        </nav>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+    <meta name="theme-color" content="#262421" media="(prefers-color-scheme: dark)">
+    <meta name="theme-color" content="#eeede9" media="(prefers-color-scheme: light)">
+    <title>Chess with Claude</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.base.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessground@9.2.1/assets/chessground.cburnett.css">
+    <link rel="stylesheet" href="/static/style.css">
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <section class="gate" id="gate">
+      <div class="gate-card">
+        <div class="gate-knight" aria-hidden="true">♞</div>
+        <h1>Chess with Claude</h1>
+        <p id="gate-msg" role="status">Enter the password to play.</p>
+        <form id="gate-form">
+          <label for="gate-input">Password</label>
+          <input id="gate-input" type="password" autocomplete="current-password" required>
+          <button class="primary" type="submit">Continue</button>
+        </form>
       </div>
     </section>
-
-    <aside class="panel">
-      <header class="panel-head">
-        <div>
-          <h1 id="panel-title">Claude</h1>
-          <p id="status" class="status" role="status"></p>
+    <main id="app" class="app" hidden>
+      <header class="brand"><span aria-hidden="true">♞</span><strong>Chess with Claude</strong><span class="brand-note">A better move, every game.</span></header>
+      <section id="board-column" class="board-column" aria-label="Chess game">
+        <div id="board-stack" class="board-stack">
+          <div id="player-top" class="player"></div>
+          <div id="board-area" class="board-area">
+            <div id="evalbar" class="evalbar" role="img" aria-label="Position evaluation" hidden><div id="eval-fill"></div></div>
+            <div id="board-wrap" class="board-wrap"><div id="board" tabindex="0" aria-label="Chess board. Drag or select pieces to move."></div></div>
+          </div>
+          <div id="player-bottom" class="player"></div>
+          <div id="move-strip" class="move-strip" aria-label="Recent moves"></div>
+          <div id="board-review" hidden>
+            <p id="board-review-label" class="position-label"></p>
+            <nav class="review-nav" aria-label="Board review navigation">
+              <button data-step="first" aria-label="First position">⇤</button>
+              <button data-step="prev" aria-label="Previous move">←</button>
+              <span class="review-position"></span>
+              <button data-step="next" aria-label="Next move">→</button>
+              <button data-step="last" aria-label="Last position">⇥</button>
+            </nav>
+          </div>
+          <div id="mobile-footer"></div>
         </div>
-        <button id="btn-claude" class="icon" type="button" title="Claude settings" aria-label="Claude settings">
-          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h6m4 0h6M4 17h10m4 0h2M10 4v6m4 4v6"/></svg>
-        </button>
-        <button id="btn-close-review" class="icon" type="button" title="Back to the game" aria-label="Back to the game" hidden>×</button>
-      </header>
-      <div id="banner" class="banner" aria-live="polite" hidden></div>
-      <section id="review" class="review" aria-label="Game analysis" hidden>
-        <div class="review-progress" id="review-progress" role="status" hidden><div class="bar"><span></span></div><p></p></div>
-        <div class="accuracy" id="accuracy"></div>
-        <svg id="graph" class="graph" viewBox="0 0 300 60" preserveAspectRatio="none" role="slider" tabindex="0" aria-label="Position on evaluation graph" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></svg>
-        <table class="counts" id="counts"></table>
       </section>
-      <ol id="moves" class="moves" aria-label="Moves"></ol>
-      <nav id="review-nav" class="review-nav" aria-label="Review navigation" hidden>
-        <button id="review-first" type="button" aria-label="First position" title="First position (Home)">⇤</button>
-        <button id="review-prev" type="button" aria-label="Previous move" title="Previous move (←)">←</button>
-        <span id="review-position" aria-live="polite"></span>
-        <button id="review-next" type="button" aria-label="Next move" title="Next move (→)">→</button>
-        <button id="review-last" type="button" aria-label="Last position" title="Last position (End)">⇥</button>
-      </nav>
-      <div id="chat" class="chat" role="log" aria-label="Conversation with Claude" aria-live="polite"></div>
-      <form id="chat-form" class="chat-form" autocomplete="off">
-        <input id="chat-input" placeholder="Message Claude" maxlength="2000" aria-label="Message Claude">
-        <button type="submit" aria-label="Send">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      <aside class="panel" aria-label="Game panel">
+        <header class="panel-heading">
+          <div><h1>Let's play.</h1><p>Find your next best move.</p></div>
+          <button class="icon" data-action="more" aria-label="Claude settings">⚙</button>
+        </header>
+        <nav class="panel-tabs" aria-label="Game panel tabs" role="tablist">
+          <button id="tab-moves" data-tab="moves" role="tab" aria-controls="moves-pane" aria-selected="true">Moves</button>
+          <button id="tab-chat" data-tab="chat" role="tab" aria-controls="chat-pane" aria-selected="false">Chat<span class="unread-dot" hidden></span></button>
+          <button id="tab-review" data-tab="review" role="tab" aria-controls="report" aria-selected="false">Review</button>
+        </nav>
+        <section id="moves-pane" class="tab-pane" role="tabpanel" aria-labelledby="tab-moves">
+          <div class="moves-heading"><span>Move</span><span>White</span><span>Black</span></div>
+          <ol id="moves" class="moves" aria-label="Game moves"></ol>
+          <p id="moves-empty" class="empty">Your next chapter starts with a move.</p>
+        </section>
+        <section id="chat-pane" class="tab-pane" role="tabpanel" aria-labelledby="tab-chat" hidden>
+          <div id="chat-content" class="chat-content">
+            <div id="chat" class="chat" role="log" aria-label="Conversation with Claude" aria-live="polite"></div>
+            <form id="chat-form" class="chat-form" autocomplete="off">
+              <input id="chat-input" aria-label="Message Claude" placeholder="Message Claude…" maxlength="2000">
+              <button class="primary" type="submit" aria-label="Send message">↑</button>
+            </form>
+          </div>
+        </section>
+        <div id="report-home" class="report-home">
+          <section id="report" class="report" role="tabpanel" aria-labelledby="report-title" hidden>
+            <header class="report-heading">
+              <div><h2 id="report-title">Game Report</h2><p id="review-opening" class="muted"></p></div>
+              <button data-action="close-review" class="icon" aria-label="Close review and return to Play">×</button>
+            </header>
+            <div id="review-empty"><p class="empty">Finish a game to review it.</p><h3>Past games</h3><ul id="review-games" class="games-list"></ul></div>
+            <div id="review-progress" hidden>
+              <p id="progress-text" role="status">Starting analysis…</p>
+              <progress id="progress" max="100" value="0" aria-label="Game analysis progress"></progress>
+            </div>
+            <div id="report-data" hidden>
+              <div id="accuracy" class="accuracy"></div>
+              <h3>How the game unfolded</h3>
+              <svg id="graph" class="graph" viewBox="0 0 400 110" preserveAspectRatio="none" role="slider" tabindex="0" aria-label="Review position on evaluation graph" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0"></svg>
+              <div class="graph-caption"><span>White advantage</span><span>Black advantage</span></div>
+              <nav class="review-nav" aria-label="Report navigation">
+                <button data-step="first" aria-label="First position">⇤</button>
+                <button data-step="prev" aria-label="Previous move">←</button>
+                <span class="review-position"></span>
+                <button data-step="next" aria-label="Next move">→</button>
+                <button data-step="last" aria-label="Last position">⇥</button>
+              </nav>
+              <div id="move-detail" class="move-detail" aria-live="polite"></div>
+              <button class="mobile-only full" data-action="view-board">View this position on the board</button>
+              <table id="counts" class="counts"><caption>Move ratings</caption></table>
+              <h3>Move by move</h3>
+              <ol id="review-moves" class="moves review-moves" aria-label="Reviewed moves"></ol>
+            </div>
+          </section>
+        </div>
+        <footer id="game-footer" class="game-footer">
+          <p id="status" class="status" role="status" aria-live="polite">Connecting…</p>
+          <div id="banner" class="banner" hidden></div>
+          <div class="primary-actions">
+            <button id="btn-new" data-action="new" class="primary">＋ New game</button>
+            <button id="btn-draw" data-action="draw" aria-label="Offer draw">½<span>Draw</span></button>
+            <button id="btn-resign" data-action="resign" aria-label="Resign">⚑<span>Resign</span></button>
+          </div>
+          <div class="utility-actions" aria-label="Game settings">
+            <button data-action="flip" aria-label="Flip board">⇅<span>Flip</span></button>
+            <button data-action="eval" aria-pressed="false">▥<span>Eval bar</span></button>
+            <button data-action="sound" aria-pressed="true">♫<span>Sound</span></button>
+            <button data-action="games">◷<span>Past games</span></button>
+          </div>
+        </footer>
+      </aside>
+      <section id="mobile-report" class="mobile-report" aria-label="Game Report" hidden></section>
+      <nav class="bottom-tabs" aria-label="Main navigation">
+        <button id="nav-play" data-page="play" aria-current="page"><span aria-hidden="true">♟</span>Play</button>
+        <button id="nav-review" data-page="review"><span aria-hidden="true">▥</span>Review</button>
+        <button id="nav-chat" data-page="chat">
+          <span aria-hidden="true">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M20 11a8 8 0 0 1-8 8H7l-4 3V11a9 9 0 0 1 17 0Z"></path>
+            </svg>
+          </span>
+          Chat
+          <span class="unread-dot" hidden></span>
         </button>
-      </form>
-    </aside>
-  </main>
-
-  <dialog id="dlg-chat" class="bottom-sheet" aria-labelledby="chat-title">
-    <div class="sheet-handle" aria-hidden="true"></div>
-    <header class="dlg-head"><h2 id="chat-title">Chat</h2><button id="btn-close-chat" class="icon" type="button" aria-label="Close chat">×</button></header>
-    <div id="chat-sheet-content" class="sheet-content"></div>
-  </dialog>
-
-  <dialog id="dlg-moves" class="bottom-sheet" aria-labelledby="moves-title">
-    <div class="sheet-handle" aria-hidden="true"></div>
-    <header class="dlg-head"><h2 id="moves-title">Moves</h2><button id="btn-close-moves" class="icon" type="button" aria-label="Close moves">×</button></header>
-    <div id="moves-sheet-content" class="sheet-content"></div>
-  </dialog>
-
-  <section class="gate" id="gate" hidden>
-    <div class="gate-card">
-      <h1>Chess with Claude</h1>
-      <p id="gate-msg" aria-live="polite">Enter the password to play.</p>
-      <form id="gate-form">
-        <input id="gate-input" type="password" placeholder="Password" autocomplete="current-password" aria-label="Password">
-        <button class="primary" type="submit">Continue</button>
-      </form>
-    </div>
-  </section>
-
-  <dialog id="dlg-new" aria-labelledby="new-title">
-    <form method="dialog">
-      <h2 id="new-title">New game</h2>
-      <p class="muted">Choose which side you’d like to play.</p>
-      <div class="choices">
-        <button value="white" aria-label="Play as White"><span class="choice-piece" aria-hidden="true">♔</span>White</button>
-        <button value="random" aria-label="Play a random side"><span class="choice-piece" aria-hidden="true">◐</span>Random</button>
-        <button value="black" aria-label="Play as Black"><span class="choice-piece" aria-hidden="true">♚</span>Black</button>
+        <button id="nav-more" data-page="more"><span aria-hidden="true">•••</span>More</button>
+      </nav>
+    </main>
+    <dialog id="dlg-chat" class="sheet chat-sheet" aria-labelledby="chat-title">
+      <header class="dialog-heading"><h2 id="chat-title">Chat with Claude</h2><button class="icon" data-close aria-label="Close chat">×</button></header>
+      <div id="chat-sheet-home" class="chat-sheet-home"></div>
+    </dialog>
+    <dialog id="dlg-more" class="sheet" aria-labelledby="more-title">
+      <header class="dialog-heading"><h2 id="more-title">Your game</h2><button class="icon" data-close aria-label="Close settings">×</button></header>
+      <div class="sheet-scroll">
+        <section class="settings-section">
+          <h3>Claude settings</h3>
+          <p id="claude-unavailable" class="muted" hidden>Claude Code isn't installed on this server. Ask Claude to play chess in Claude Code elsewhere.</p>
+          <div id="claude-controls">
+            <p id="account-status" class="muted"></p>
+            <div id="account-actions"><button id="claude-login" class="primary">Sign in to Claude</button><button id="claude-logout">Sign out</button></div>
+            <div id="login-flow" hidden>
+              <p id="login-preparing" role="status">Preparing…</p>
+              <a id="login-link" target="_blank" rel="noopener noreferrer" hidden>Open Claude sign-in ↗</a>
+              <form id="code-form">
+                <label for="claude-code">Sign-in code</label>
+                <div class="input-row">
+                  <input id="claude-code" autocomplete="off" autocapitalize="none" spellcheck="false">
+                  <button id="code-continue" class="primary">Continue</button>
+                </div>
+              </form>
+              <p id="login-checking" role="status" hidden>Checking the code…</p>
+              <button id="claude-cancel" class="text-button">Cancel sign-in</button>
+            </div>
+            <label for="claude-model">Model</label>
+            <select id="claude-model"></select>
+            <div class="runner-row">
+              <div><strong id="runner-status"></strong><p id="runner-error" class="error" hidden></p></div>
+              <button id="claude-control">Start Claude</button>
+            </div>
+          </div>
+        </section>
+        <section class="settings-section">
+          <h3>Difficulty</h3>
+          <p class="muted">Choose your challenge for the next game.</p>
+          <div id="settings-difficulty" class="difficulty"></div>
+        </section>
+        <section class="settings-section settings-buttons" aria-label="Board preferences">
+          <button data-action="games">◷ Past games</button>
+          <button data-action="sound" aria-pressed="true">♫ Sound</button>
+          <button data-action="eval" aria-pressed="false">▥ Eval bar</button>
+          <button data-action="flip">⇅ Flip board</button>
+        </section>
       </div>
-      <button value="cancel" class="link">Cancel</button>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-confirm" aria-labelledby="confirm-text">
-    <form method="dialog">
-      <p id="confirm-text"></p>
-      <div class="choices">
-        <button value="cancel">Cancel</button>
-        <button value="ok" id="confirm-ok" class="primary">OK</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-claude" aria-labelledby="claude-title">
-    <form method="dialog">
-      <header class="dlg-head"><h2 id="claude-title">Claude settings</h2><button value="close" class="icon" aria-label="Close">×</button></header>
-      <div id="claude-settings"></div>
-    </form>
-  </dialog>
-
-  <dialog id="dlg-games" aria-labelledby="games-title">
-    <form method="dialog">
-      <header class="dlg-head"><h2 id="games-title">Past games</h2><button value="close" class="icon" aria-label="Close">×</button></header>
-      <ul id="games-list" class="games-list"></ul>
-    </form>
-  </dialog>
-
-  <div id="toast" class="toast" role="status" hidden></div>
-</body>
+    </dialog>
+    <dialog id="dlg-new" aria-labelledby="new-title">
+      <header class="dialog-heading"><h2 id="new-title">A new challenge</h2><button class="icon" data-close aria-label="Cancel new game">×</button></header>
+      <p class="muted">Pick a side. Find your level.</p>
+      <fieldset class="side-choices">
+        <legend>Play as</legend>
+        <label><input type="radio" name="side" value="white" checked><span>♔<small>White</small></span></label>
+        <label><input type="radio" name="side" value="random"><span>◐<small>Random</small></span></label>
+        <label><input type="radio" name="side" value="black"><span>♚<small>Black</small></span></label>
+      </fieldset>
+      <h3>Difficulty</h3>
+      <div id="new-difficulty" class="difficulty"></div>
+      <button id="start-game" class="primary full">Play chess</button>
+    </dialog>
+    <dialog id="dlg-games" class="sheet" aria-labelledby="games-title">
+      <header class="dialog-heading"><h2 id="games-title">Past games</h2><button class="icon" data-close aria-label="Close past games">×</button></header>
+      <ul id="games-list" class="games-list sheet-scroll"></ul>
+    </dialog>
+    <dialog id="dlg-confirm" aria-labelledby="confirm-text">
+      <form method="dialog">
+        <h2 id="confirm-text"></h2>
+        <div class="confirm-actions"><button value="cancel" autofocus>Cancel</button><button id="confirm-ok" class="danger" value="ok">Resign</button></div>
+      </form>
+    </dialog>
+    <dialog id="dlg-promotion" class="promotion" aria-labelledby="promotion-title">
+      <h2 id="promotion-title">Promote your pawn</h2>
+      <div id="promotion-choices" class="promotion-choices"></div>
+      <button class="text-button full" data-close>Cancel promotion</button>
+    </dialog>
+    <div id="toast" class="toast" role="status" hidden></div>
+  </body>
 </html>
