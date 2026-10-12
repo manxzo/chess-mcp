@@ -332,6 +332,8 @@ dialog p { font-size: 14px; }
     border-radius: 18px 18px 0 0; overflow: hidden;
   }
   .bottom-sheet[open] { display: flex; flex-direction: column; animation: sheet-enter .18s ease-out; }
+  /* While typing, the keyboard shrinks the viewport: give the chat the whole of what is left. */
+  .bottom-sheet:has(#chat-input:focus) { height: calc(var(--sheet-viewport-height, 100dvh) - 16px - env(safe-area-inset-top)); }
   .sheet-handle { width: 36px; height: 4px; flex-shrink: 0; margin: 0 auto 8px; border-radius: 2px; background: var(--line); }
   .bottom-sheet .dlg-head { flex-shrink: 0; margin-bottom: 8px; }
   .bottom-sheet h2 { margin: 0; font-size: 18px; }
