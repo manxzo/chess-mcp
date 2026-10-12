@@ -57,7 +57,8 @@ function tokenFromUrl() {
 const app = {
   token: tokenFromUrl(), ws: null, retry: 0, lastSeq: -1, game: null, connected: false,
   flipped: false, showEval: saved.get('chess-eval') === '1', sound: saved.get('chess-sound') !== '0',
-  tab: 'moves', page: 'play', unread: false, review: null, requestId: null, loading: null,
+  confirmMoves: saved.get('chess-confirm') === '1', provisional: null,
+  tab: 'moves', page: 'play', pageBackPending: false, unread: false, review: null, requestId: null, loading: null,
   pendingPly: null, pendingMove: null, games: null, boardKey: '', movesKey: '', bannerKey: '', chatKey: '',
   playersKey: '', modelsKey: '', settingsElo: undefined,
 };
@@ -67,7 +68,7 @@ const ground = Chessground($('board'), {
   animation: { enabled: !reduced.matches, duration: reduced.matches ? 0 : 160 },
   highlight: { lastMove: true, check: true },
   movable: { free: false, color: undefined, showDests: true, events: { after: onUserMove } },
-  premovable: { enabled: true, showDests: true, events: {
+  premovable: { enabled: !app.confirmMoves, showDests: true, events: {
     set() { text('status', 'Premove set'); },
     unset() { renderStatus(); },
   } },
@@ -83,6 +84,7 @@ function placeForViewport() {
   (phone.matches ? $('mobile-footer') : document.querySelector('.panel')).append($('game-footer'));
   (phone.matches ? $('chat-sheet-home') : $('chat-pane')).append($('chat-content'));
   (phone.matches ? $('mobile-report') : $('report-home')).append($('report'));
+  if (phone.matches && app.page === 'review') setPage('review');
   $('chat').scrollTop = chatScroll;
   $('report').scrollTop = reportScroll;
   renderView();
@@ -196,14 +198,17 @@ function handle(message) {
       clearPending(); ground.cancelPremove(); app.boardKey = '';
     }
     if (app.pendingMove && (message.fen !== app.pendingMove.fen || message.status !== 'active')) clearPending();
+    if (app.provisional && (message.game_id !== app.provisional.gameId || message.fen !== app.provisional.fen || !canMove(app.provisional.uci))) clearPending();
     if (previous?.game_id === message.game_id) {
-      if (previous.status === 'active' && message.status !== 'active') playSound('end');
-      else if (message.moves.length > previous.moves.length) {
-        const san = message.moves.at(-1).san;
-        playSound(/[+#]/.test(san) ? 'check' : san.includes('x') ? 'capture' : 'move');
+      if (message.moves.length > previous.moves.length) {
+        const count = (fen) => (fen.split(' ')[0].match(/[prnbqk]/gi) || []).length;
+        playSound(message.check ? 'check' : count(message.fen) < count(previous.fen) ? 'capture' : 'move');
       }
+      if (previous.status === 'active' && message.status !== 'active') playSound('end');
     }
     if ($('dlg-promotion').open && (message.status !== 'active' || message.game_id !== promotion?.gameId || message.fen !== promotion?.fen)) $('dlg-promotion').close();
+    const reviewVisible = phone.matches ? app.page === 'review' : app.tab === 'review';
+    if (reviewVisible && !app.review && !app.loading && message.status !== 'active' && (previous?.status === 'active' || previous?.game_id !== message.game_id)) startReview(message.game_id);
     render();
   } else if (message.type === 'error') {
     clearPending(); app.boardKey = ''; render();
@@ -213,7 +218,7 @@ function handle(message) {
     }
     toast(message.message);
   } else if (message.type === 'games') {
-    app.games = message.games; renderGames();
+    app.games = message.games; renderGames(); if (app.game) renderPlayers();
   } else if (message.type === 'review_progress' && message.game_id === app.requestId && app.loading) {
     app.loading = message; renderReport();
   } else if (message.type === 'review' && message.review.game_id === app.requestId) {
@@ -245,12 +250,19 @@ function claudeStatusText(claude) {
 }
 function render() {
   if (!app.game) { renderView(); return; }
-  renderBoard(); renderPlayers(); renderStatus(); renderBanner(); renderControls();
+  renderBoard(); renderPlayers(); renderBanner(); renderStatus(); renderControls();
   renderMoves(); renderChat(); renderClaude(); renderEval(); renderReport(); renderView();
   requestAnimationFrame(sizeBoard);
 }
 function renderBoard() {
   const game = app.game, review = app.review;
+  if (!game) return;
+  if (app.provisional && !review && !app.loading) {
+    ground.set({ fen: app.provisional.previewFen, orientation: orientation(),
+      lastMove: [app.provisional.uci.slice(0, 2), app.provisional.uci.slice(2, 4)], check: false,
+      movable: { color: undefined, dests: new Map() }, premovable: { enabled: false }, drawable: { autoShapes: [] } });
+    return;
+  }
   if (app.pendingMove && app.pendingMove.fen === game.fen && !review && !app.loading) {
     ground.set({ orientation: orientation() });
     return;
@@ -259,30 +271,34 @@ function renderBoard() {
   const reviewing = Boolean(review || app.loading);
   const fen = review ? move?.fen || START_FEN : game.fen;
   const turn = review ? (fen.split(' ')[1] === 'w' ? 'white' : 'black') : game.turn;
-  const key = JSON.stringify([game.game_id, fen, orientation(), reviewing, app.connected, game.status, reviewing ? null : game.dests, Boolean(app.pendingMove), move?.best_uci]);
+  const key = JSON.stringify([game.game_id, fen, orientation(), reviewing, app.connected, game.status, reviewing ? null : game.dests, Boolean(app.pendingMove), move?.best_uci, move?.rating, turn, game.check, game.last_move, game.human_color, app.confirmMoves]);
   // Eval/chat/runner-only updates must never reset a drag, selection, or premove.
   if (key === app.boardKey) return;
   app.boardKey = key;
   const active = !reviewing && game.status === 'active' && app.connected && !app.pendingMove;
-  const shapes = move?.best_uci && move.best_uci !== move.uci
+  const shapes = showBestMove(move)
     ? [{ orig: move.best_uci.slice(0, 2), dest: move.best_uci.slice(2, 4), brush: 'green' }] : [];
   ground.set({
     fen, orientation: orientation(), turnColor: turn,
     lastMove: review ? (move ? [move.uci.slice(0, 2), move.uci.slice(2, 4)] : undefined) : game.last_move || undefined,
     check: review ? Boolean(move && /[+#]$/.test(move.san)) : game.check,
     movable: { color: active ? game.human_color : undefined, dests: new Map(active ? Object.entries(game.dests || {}) : []) },
-    premovable: { enabled: active },
+    premovable: { enabled: active && !app.confirmMoves },
     drawable: { autoShapes: shapes },
   });
-  if (active && game.turn === game.human_color && ground.state.premovable.current) {
+  if (active && !app.confirmMoves && game.turn === game.human_color && ground.state.premovable.current) {
     const [from, to] = ground.state.premovable.current;
     const played = Boolean(game.dests?.[from]?.includes(to)) && ground.playPremove();
     if (!played) ground.cancelPremove();
-  } else if (!active) ground.cancelPremove();
+  } else if (!active || app.confirmMoves) ground.cancelPremove();
+}
+function showBestMove(move) {
+  return Boolean(move?.best_uci && move.best_uci !== move.uci && ['excellent', 'good', 'inaccuracy', 'mistake', 'miss', 'blunder'].includes(move.rating));
 }
 function renderPlayers() {
   const game = app.game;
-  const key = JSON.stringify([orientation(), humanColor(), game.claude_connected, game.elo, app.review?.data]);
+  const reviewedGame = app.review && app.review.data.game_id !== game.game_id ? app.games?.find((item) => item.game_id === app.review.data.game_id) : game;
+  const key = JSON.stringify([orientation(), humanColor(), game.claude_connected, reviewedGame?.game_id, reviewedGame?.elo, app.review?.data]);
   if (key === app.playersKey) return;
   app.playersKey = key;
   const player = (color) => {
@@ -291,7 +307,7 @@ function renderPlayers() {
     row.append(el('span', 'avatar ' + (human ? 'human-avatar' : ''), human ? '●' : '♞'));
     const identity = el('div', 'identity');
     identity.append(el('strong', '', human ? 'You' : 'Claude'));
-    const subtitle = app.review ? (human ? 'Your game' : 'Your opponent') : human ? 'Playing ' + color : game.elo == null ? 'Claude' : String(game.elo);
+    const subtitle = human ? 'Playing ' + color : !reviewedGame ? 'Your opponent' : reviewedGame.elo == null ? 'Own game' : reviewedGame.elo + ' Elo';
     identity.append(el('span', 'player-subtitle', subtitle));
     row.append(identity);
     if (!human && !game.claude_connected && !app.review) row.append(el('span', 'offline', 'offline'));
@@ -311,15 +327,18 @@ function renderStatus() {
   if (!app.connected) value = app.retry ? 'Reconnecting…' : 'Connecting…';
   else if (app.loading) value = 'Analysing the game…';
   else if (app.review) value = 'Reviewing your game';
-  else if (game?.status !== 'active' && game) value = resultText(game);
-  else if (game && !game.claude_connected) value = claudeStatusText(game.claude);
+  else if (game?.status !== 'active' && game) value = 'Game over · ' + game.result;
+  else if (app.pendingMove) value = 'Sending move…';
+  else if (game && !game.claude_connected && ['starting', 'running', 'stopping'].includes(game.claude?.status)) value = claudeStatusText(game.claude);
   else if (ground.state.premovable.current) value = 'Premove set';
-  else if (game) value = game.turn === game.human_color ? 'Your move' : 'Claude is thinking…';
+  else if (game) value = game.turn === game.human_color ? 'Your move' : game.claude_connected ? 'Claude is thinking…' : 'Waiting for Claude';
   text('status', value); $('status').title = value;
+  $('status').hidden = Boolean(app.provisional) || (!$('banner').hidden && $('banner').firstElementChild?.textContent === value);
+  $('move-confirmation').hidden = !app.provisional;
 }
 function renderBanner() {
   const game = app.game, box = $('banner');
-  const key = JSON.stringify([app.review != null, app.loading != null, game.status, game.winner, game.reason, game.draw_offer, game.claude_connected, game.claude?.status, game.claude?.auth?.logged_in, game.claude?.available, game.moves.length === 0]);
+  const key = JSON.stringify([app.review != null, app.loading != null, game.game_id, game.status, game.result, game.winner, game.human_color, game.reason, game.draw_offer, game.claude_connected, game.claude?.status, game.claude?.error, game.claude?.auth?.logged_in, game.claude?.available]);
   if (key === app.bannerKey) return;
   app.bannerKey = key;
   const nodes = [];
@@ -330,10 +349,12 @@ function renderBanner() {
       nodes.push(el('span', '', resultText(game)), button('Review', () => startReview(app.game.game_id), 'primary'));
     } else if (!game.claude_connected && game.claude?.available && ['stopped', 'error'].includes(game.claude.status)) {
       const signedIn = game.claude.auth?.logged_in;
-      nodes.push(el('span', '', signedIn ? "Claude isn't running." : 'Ready when you are.'), button(signedIn ? 'Start Claude' : 'Sign in', () => {
+      nodes.push(el('span', '', claudeStatusText(game.claude)), button(signedIn ? 'Start Claude' : 'Sign in', () => {
         if (signedIn) send({ type: 'claude_start' });
         else { openDialog('dlg-more'); if (!app.game.claude.login?.busy) send({ type: 'claude_login' }); }
       }, 'primary'));
+    } else if (!game.claude_connected && !game.claude?.available) {
+      nodes.push(el('span', '', claudeStatusText(game.claude)));
     }
   }
   box.replaceChildren(...nodes); box.hidden = !nodes.length;
@@ -346,6 +367,7 @@ function renderControls() {
   $('btn-new').disabled = !app.connected;
   all('[data-action="eval"]').forEach((node) => node.setAttribute('aria-pressed', String(app.showEval)));
   all('[data-action="sound"]').forEach((node) => node.setAttribute('aria-pressed', String(app.sound)));
+  all('[data-action="confirm-moves"]').forEach((node) => node.setAttribute('aria-pressed', String(app.confirmMoves)));
 }
 function renderEval() {
   const move = app.review?.data.moves[app.review.ply - 1];
@@ -428,7 +450,7 @@ function setUnread(value) {
   $('nav-chat').setAttribute('aria-label', value ? 'Chat, unread message from Claude' : 'Chat');
   $('tab-chat').setAttribute('aria-label', value ? 'Chat, unread message from Claude' : 'Chat');
 }
-let chatGame = null, chatIds = [], chatFollowing = true;
+let chatGame = null, chatIds = [], chatMessages = [], chatFollowing = true;
 $('chat').addEventListener('scroll', () => {
   if (chatVisible()) chatFollowing = $('chat').scrollHeight - $('chat').scrollTop - $('chat').clientHeight < 64;
 }, { passive: true });
@@ -442,7 +464,7 @@ function renderChat() {
   const box = $('chat'), sameGame = chatGame === app.game.game_id;
   const nearBottom = chatVisible() ? box.scrollHeight - box.scrollTop - box.clientHeight < 64 : chatFollowing;
   const oldScroll = box.scrollTop;
-  const appendOnly = sameGame && messages.length >= chatIds.length && chatIds.every((id, index) => id === messages[index].id);
+  const appendOnly = sameGame && messages.length >= chatMessages.length && chatMessages.every((message, index) => message === JSON.stringify(messages[index]));
   const fresh = sameGame ? messages.filter((message) => !chatIds.includes(message.id)) : [];
   if (!appendOnly) box.replaceChildren();
   for (const message of appendOnly ? messages.slice(chatIds.length) : messages) {
@@ -456,6 +478,7 @@ function renderChat() {
     playSound('chat');
   }
   chatGame = app.game.game_id; chatIds = messages.map((message) => message.id); app.chatKey = key;
+  chatMessages = messages.map((message) => JSON.stringify(message));
   if (nearBottom || !sameGame || fresh.at(-1)?.sender === 'human') {
     chatFollowing = true;
     if (chatVisible()) followChat();
@@ -563,17 +586,47 @@ $('start-game').addEventListener('click', async () => {
 
 // Only authoritative snapshots acknowledge moves; don't replay them after reconnecting.
 function clearPending() {
-  app.pendingMove = null; clearTimeout(pendingTimer);
+  app.pendingMove = null; app.provisional = null; app.boardKey = ''; clearTimeout(pendingTimer);
+}
+function canMove(uci) {
+  const game = app.game;
+  return Boolean(app.connected && game?.status === 'active' && !app.review && !app.loading &&
+    game.turn === game.human_color && game.dests?.[uci.slice(0, 2)]?.includes(uci.slice(2, 4)));
+}
+function prepareMove(uci) {
+  if (!canMove(uci)) { cancelMove(); return; }
+  const from = uci.slice(0, 2), to = uci.slice(2, 4), piece = ground.state.pieces.get(to);
+  // Chessground moves the piece and castling rook; complete promotion/en passant locally.
+  const changes = new Map();
+  if (piece?.role === 'pawn' && from[0] !== to[0] && app.game.fen.split(' ')[3] === to) changes.set(to[0] + from[1], undefined);
+  if (uci[4]) changes.set(to, { role: ({ q: 'queen', r: 'rook', b: 'bishop', n: 'knight' })[uci[4]], color: app.game.human_color });
+  if (changes.size) ground.setPieces(changes);
+  if (!app.confirmMoves) { submitMove(uci); return; }
+  ground.cancelPremove();
+  app.provisional = { uci, gameId: app.game.game_id, fen: app.game.fen, previewFen: ground.getFen() };
+  renderBoard(); renderStatus(); requestAnimationFrame(sizeBoard);
+}
+function confirmMove() {
+  const move = app.provisional;
+  if (!move) return;
+  if (move.gameId !== app.game?.game_id || move.fen !== app.game.fen || !canMove(move.uci)) { cancelMove(); return; }
+  app.provisional = null;
+  submitMove(move.uci);
+}
+function cancelMove() {
+  app.provisional = null; app.boardKey = '';
+  renderBoard(); renderStatus(); requestAnimationFrame(sizeBoard);
 }
 function submitMove(uci) {
-  if (!send({ type: 'move', move: uci })) { app.boardKey = ''; renderBoard(); return; }
+  if (app.pendingMove || !canMove(uci) || !send({ type: 'move', move: uci })) { cancelMove(); return; }
   app.pendingMove = { fen: app.game.fen };
-  ground.set({ movable: { color: undefined } });
-  pendingTimer = setTimeout(() => { clearPending(); app.boardKey = ''; renderBoard(); }, 5000);
+  ground.set({ movable: { color: undefined }, premovable: { enabled: false } });
+  renderStatus(); requestAnimationFrame(sizeBoard);
+  pendingTimer = setTimeout(() => { clearPending(); renderBoard(); renderStatus(); }, 5000);
 }
 let promotion = null;
 function onUserMove(from, to) {
-  if (!app.game || app.review || app.loading || app.pendingMove || !app.game.dests?.[from]?.includes(to)) {
+  if (app.pendingMove || app.provisional || !canMove(from + to)) {
     app.boardKey = ''; renderBoard(); return;
   }
   const piece = ground.state.pieces.get(to);
@@ -581,11 +634,11 @@ function onUserMove(from, to) {
     promotion = { from, to, gameId: app.game.game_id, fen: app.game.fen };
     const white = app.game.human_color === 'white';
     $('promotion-choices').replaceChildren(...[['q', 'Queen', white ? '♕' : '♛'], ['r', 'Rook', white ? '♖' : '♜'], ['b', 'Bishop', white ? '♗' : '♝'], ['n', 'Knight', white ? '♘' : '♞']].map(([suffix, name, glyph]) => {
-      const node = button(glyph, () => { submitMove(from + to + suffix); promotion = null; $('dlg-promotion').close(); });
+      const node = button(glyph, () => { promotion = null; prepareMove(from + to + suffix); $('dlg-promotion').close(); });
       node.setAttribute('aria-label', 'Promote to ' + name); return node;
     }));
     openDialog('dlg-promotion');
-  } else submitMove(from + to);
+  } else prepareMove(from + to);
 }
 $('dlg-promotion').addEventListener('close', () => {
   if (promotion) { promotion = null; app.boardKey = ''; renderBoard(); }
@@ -607,11 +660,32 @@ function selectPage(page) {
     return;
   }
   if (page === 'more') { openDialog('dlg-more'); renderView(); return; }
-  app.page = page;
+  setPage(page);
   if (page === 'review') showReview();
   renderView();
   requestAnimationFrame(() => { sizeBoard(); ground.redrawAll(); });
 }
+function setPage(page, navigate = true) {
+  if (navigate && phone.matches && !app.pageBackPending) {
+    if (page === 'review' && history.state?.chessPage !== 'review') history.pushState({ ...history.state, chessPage: 'review' }, '');
+    else if (page === 'play' && history.state?.chessPage === 'review') {
+      app.pageBackPending = true;
+      history.back();
+    }
+  }
+  app.page = page;
+}
+window.addEventListener('popstate', () => {
+  // A quick Play → Review tap can happen before the requested Back completes.
+  if (app.pageBackPending) {
+    app.pageBackPending = false;
+    if (phone.matches && app.page === 'review') history.pushState({ ...history.state, chessPage: 'review' }, '');
+    return;
+  }
+  if (history.state?.chessPage === 'review' && phone.matches) {
+    setPage('review', false); showReview(); renderView();
+  } else if (app.page === 'review') closeReview(false);
+});
 function renderView() {
   $('board-column').hidden = phone.matches && app.page === 'review';
   $('mobile-report').hidden = !phone.matches || app.page !== 'review';
@@ -648,6 +722,13 @@ const actions = {
   flip: () => { app.flipped = !app.flipped; render(); },
   eval: () => { app.showEval = !app.showEval; saved.set('chess-eval', app.showEval ? '1' : '0'); render(); },
   sound: () => { app.sound = !app.sound; saved.set('chess-sound', app.sound ? '1' : '0'); renderControls(); if (app.sound) playSound('move'); },
+  'confirm-moves': () => {
+    app.confirmMoves = !app.confirmMoves; saved.set('chess-confirm', app.confirmMoves ? '1' : '0');
+    ground.cancelPremove(); cancelMove(); renderControls();
+  },
+  'confirm-move': confirmMove,
+  'cancel-move': cancelMove,
+  'review-current': () => startReview(app.game.game_id),
   games: () => { openDialog('dlg-games'); requestGames(); },
   'close-review': closeReview,
   'view-board': () => selectPage('play'),
@@ -686,13 +767,13 @@ function startReview(gameId, ply = null) {
   ground.cancelPremove(); clearPending();
   app.review = null; app.requestId = gameId; app.pendingPly = ply;
   app.loading = { game_id: gameId, done: 0, total: 0 };
-  app.tab = 'review'; app.page = 'review'; app.boardKey = '';
+  app.tab = 'review'; setPage('review'); app.boardKey = '';
   $('report').scrollTop = 0;
   render();
 }
-function closeReview() {
+function closeReview(navigate = true) {
   app.review = null; app.requestId = null; app.loading = null; app.pendingPly = null;
-  app.tab = 'moves'; app.page = 'play'; app.boardKey = ''; app.movesKey = '';
+  app.tab = 'moves'; setPage('play', navigate); app.boardKey = ''; app.movesKey = '';
   render();
 }
 function buildReport() {
@@ -718,6 +799,10 @@ function buildReport() {
   renderGraph();
 }
 function renderReport() {
+  const finished = app.game && app.game.status !== 'active';
+  text('review-empty-text', finished ? 'Your game is ready to review.' : 'Finish a game to review it.');
+  $('review-current').hidden = !finished;
+  $('review-current').disabled = !app.connected;
   $('review-empty').hidden = Boolean(app.review || app.loading);
   $('review-progress').hidden = !app.loading;
   $('report-data').hidden = !app.review;
@@ -738,7 +823,10 @@ function renderGraph() {
   const x = (index) => index / n * 400, y = (value) => 100 - Math.max(0, Math.min(100, value ?? 50)) * .9;
   const points = data.eval_series.map((value, index) => x(index) + ',' + y(value));
   const nodes = [
-    svg('path', { d: 'M0,110 L' + points.join(' L') + ' L400,110 Z', class: 'graph-area' }),
+    svg('rect', { x: 0, y: 0, width: 400, height: 55, class: 'graph-white' }),
+    svg('rect', { x: 0, y: 55, width: 400, height: 55, class: 'graph-black' }),
+    svg('path', { d: 'M0,55 L' + points.join(' L') + ' L400,55 Z', class: 'graph-area' }),
+    svg('path', { d: 'M' + points.join(' L'), class: 'graph-line' }),
     svg('line', { x1: 0, x2: 400, y1: 55, y2: 55, class: 'graph-mid' }),
   ];
   for (const move of data.moves) {
@@ -765,7 +853,7 @@ function updateReviewPosition() {
     const line = el('div', 'move-verdict');
     line.append(badge(move.rating), el('strong', '', moveLabel(move, ply)), el('span', '', RATINGS[move.rating]?.[0] || 'Unrated'), el('strong', 'move-eval', move.eval_after));
     detail.replaceChildren(line);
-    if (move.best_line && move.best_uci !== move.uci) detail.append(el('p', 'best-line', 'Best line: ' + move.best_line));
+    if (move.best_line && showBestMove(move)) detail.append(el('p', 'best-line', 'Best line: ' + move.best_line));
     text('board-review-label', moveLabel(move, ply) + ' · ' + (RATINGS[move.rating]?.[0] || 'Unrated') + ' · ' + move.eval_after);
   } else {
     detail.replaceChildren(el('p', 'muted', 'Starting position. Step through the game to find your turning points.'));
@@ -790,11 +878,19 @@ $('graph').addEventListener('click', (event) => {
   goTo(Math.round((event.clientX - rect.left) / rect.width * app.review.data.moves.length));
 });
 document.addEventListener('keydown', (event) => {
-  if (!app.review || event.target.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('dialog[open]')) return;
+  if (event.isComposing || event.target.closest('input, textarea, select, [contenteditable="true"]') || document.querySelector('dialog[open]')) return;
+  if (app.provisional && ['Enter', 'Escape'].includes(event.key)) {
+    event.preventDefault();
+    if (event.key === 'Enter') confirmMove(); else cancelMove();
+    return;
+  }
+  if (event.key === 'Escape' && (app.review || app.loading || app.page === 'review' || app.tab === 'review')) {
+    event.preventDefault(); closeReview(); return;
+  }
+  if (!app.review) return;
   const { ply, data } = app.review;
   const target = ({ ArrowLeft: ply - 1, ArrowRight: ply + 1, Home: 0, End: data.moves.length })[event.key];
   if (target != null) { event.preventDefault(); goTo(target); }
-  else if (event.key === 'Escape') closeReview();
 });
 let touch = null;
 $('board').addEventListener('touchstart', (event) => {
