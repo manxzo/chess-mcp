@@ -26,6 +26,12 @@ Start, or start Claude Code in this folder (it picks up `.mcp.json`) and say
 The web UI asks for a password. Set `CHESS_PASSWORD`; without it, the access
 token printed at startup is the password.
 
+Difficulty: pick a target Elo (1320 to 3190, what Stockfish's strength limit
+supports) when starting a game, or "Claude" for Claude's own play. With a
+target, Claude is told the level and gets a suggestion from a Stockfish limited
+to that strength each move; it may still deviate. Reviews, the eval bar and
+Claude's coaching always use the full engine.
+
 Stockfish is found via `STOCKFISH_PATH`, then `PATH`, then `/usr/games/stockfish`.
 Extra UCI engines go in `~/.local/share/chess-mcp/engines.toml`:
 
