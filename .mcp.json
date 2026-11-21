@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "chess": {
+      "command": "uv",
+      "args": ["run", "--quiet", "chess-mcp", "mcp"],
+      "env": {
+        "CHESS_SERVER_URL": "${CHESS_SERVER_URL:-http://127.0.0.1:8765}",
+        "CHESS_TOKEN": "${CHESS_TOKEN:-}"
+      }
+    }
+  }
+}
